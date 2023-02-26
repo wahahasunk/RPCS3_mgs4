@@ -179,17 +179,32 @@ void VKGSRender::update_draw_state()
 
 		const auto polygon_offset_scale = rsx::method_registers.poly_offset_scale();
 		auto polygon_offset_bias = rsx::method_registers.poly_offset_bias();
-
-		if (m_draw_fbo->depth_format() == VK_FORMAT_D24_UNORM_S8_UINT && is_NVIDIA(vk::get_chip_family()))
+		//patch from some commit of Rajkosto mgs4
+		const auto constant_factor = rsx::method_registers.poly_offset_bias();
+		auto slope_factor = rsx::method_registers.poly_offset_scale();
+		if (g_cfg.video.mgs4 && slope_factor == 0)
 		{
-			// Empirically derived to be 0.5 * (2^24 - 1) for fixed type on Pascal. The same seems to apply for other NVIDIA GPUs.
-			// RSX seems to be using 2^24 - 1 instead making the biases twice as large when using fixed type Z-buffer on NVIDIA.
-			// Note, that the formula for floating point is complicated, but actually works out for us.
-			// Since the exponent range for a polygon is around 0, and we have 23 (+1) mantissa bits, R just works out to the same range by chance \o/.
-			polygon_offset_bias *= 0.5f;
+			slope_factor = constant_factor * 0.5f;
+			if (slope_factor < 0)
+				slope_factor -= 0.05f;
+			else if (slope_factor > 0)
+				slope_factor += 0.05f;
+			vkCmdSetDepthBias(*m_current_command_buffer, constant_factor, 0.f, slope_factor);
 		}
+		else
+		{
 
-		vkCmdSetDepthBias(*m_current_command_buffer, polygon_offset_bias, 0.f, polygon_offset_scale);
+			if (m_draw_fbo->depth_format() == VK_FORMAT_D24_UNORM_S8_UINT && is_NVIDIA(vk::get_chip_family()))
+			{
+				// Empirically derived to be 0.5 * (2^24 - 1) for fixed type on Pascal. The same seems to apply for other NVIDIA GPUs.
+				// RSX seems to be using 2^24 - 1 instead making the biases twice as large when using fixed type Z-buffer on NVIDIA.
+				// Note, that the formula for floating point is complicated, but actually works out for us.
+				// Since the exponent range for a polygon is around 0, and we have 23 (+1) mantissa bits, R just works out to the same range by chance \o/.
+				polygon_offset_bias *= 0.5f;
+			}
+
+			vkCmdSetDepthBias(*m_current_command_buffer, polygon_offset_bias, 0.f, polygon_offset_scale);
+		}
 	}
 	else
 	{
