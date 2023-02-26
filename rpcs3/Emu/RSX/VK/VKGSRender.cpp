@@ -2571,7 +2571,8 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 		if (!m_surface_info[index].address || !m_surface_info[index].pitch) continue;
 
 		const utils::address_range surface_range = m_surface_info[index].get_memory_range();
-		if (g_cfg.video.write_color_buffers)
+		//if (g_cfg.video.write_color_buffers)
+		if (g_cfg.video.write_color_buffers || g_cfg.video.mgs4)
 		{
 			m_texture_cache.lock_memory_region(
 				*m_current_command_buffer, m_rtts.m_bound_render_targets[index].second, surface_range, true,
