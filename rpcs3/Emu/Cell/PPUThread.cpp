@@ -1192,6 +1192,7 @@ void ppu_thread::dump_regs(std::string& ret) const
 		}
 	}
 
+	fmt::append(ret, "CIA: 0x%x\n", cia);
 	fmt::append(ret, "CR: 0x%08x\n", cr.pack());
 	fmt::append(ret, "LR: 0x%llx\n", lr);
 	fmt::append(ret, "CTR: 0x%llx\n", ctr);
@@ -3275,7 +3276,7 @@ extern void ppu_initialize()
 
 	const std::string mount_point = vfs::get("/dev_flash/");
 
-	bool dev_flash_located = Emu.GetCat().back() != 'P' && Emu.IsPathInsideDir(Emu.GetBoot(), mount_point);
+	bool dev_flash_located = !Emu.GetCat().ends_with('P') && Emu.IsPathInsideDir(Emu.GetBoot(), mount_point);
 
 	if (compile_fw || dev_flash_located)
 	{
