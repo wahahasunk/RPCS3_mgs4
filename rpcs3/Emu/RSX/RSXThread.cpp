@@ -3468,7 +3468,18 @@ namespace rsx
 			// Rescursion not allowed!
 			return;
 		}
-
+		/*
+		if (!m_queued_flip.pop(buffer))
+		{
+			// Frame was not queued before flipping
+			execute_nop_draw();
+			rsx::thread::end();			
+			return;
+		}
+		if (m_queued_flip.pop(buffer))
+		{						
+			ensure(m_queued_flip.pop(buffer));
+		}*/
 		if (!m_queued_flip.pop(buffer))
 		{
 			// Frame was not queued before flipping
@@ -3509,11 +3520,12 @@ namespace rsx
 				{
 					const auto delay_us = target_rsx_flip_time - time;
 					lv2_obj::wait_timeout(delay_us, nullptr, false);
+					//std::this_thread::sleep_for(delay_us*1ms/1000);
 					performance_counters.idle_time += delay_us;
 				}
 			}
 
-			target_rsx_flip_time = std::max(time, target_rsx_flip_time) + needed_us;
+			target_rsx_flip_time = std::max(time, target_rsx_flip_time) + needed_us;			
 			flip_notification_count = 1;
 		}
 		else if (frame_limit == frame_limit_type::_ps3)
