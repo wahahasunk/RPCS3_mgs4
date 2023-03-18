@@ -145,7 +145,12 @@ struct cfg_root : cfg::node
 		cfg::_bool overlay{ this, "Debug overlay", false, true };
 		cfg::_bool renderdoc_compatiblity{ this, "Renderdoc Compatibility Mode" };
 		cfg::_bool use_gpu_texture_scaling{ this, "Use GPU texture scaling", false };
-		cfg::_bool mgs4{ this, "MGS4", false};
+		cfg::_bool mgs4_host_gpu_labels_hack{this, "MGS4 host gpu labels hack", false};
+		cfg::_bool accurate_fnms{this, "Accurate FNMS", false};
+		cfg::_bool ClampFM{this, "ClampFM", false};
+		cfg::_bool mgs4shadowfix{this, "MGS4_shadow_fix", false};
+		cfg::_bool vk_event_hack{this, "VK event hack", false};
+		cfg::_bool mgs4wcbhack{this, "MGS4 WCB Hack", false};	
 		cfg::_bool stretch_to_display_area{ this, "Stretch To Display Area", false, true };
 		cfg::_bool force_high_precision_z_buffer{ this, "Force High Precision Z buffer" };
 		cfg::_bool strict_rendering_mode{ this, "Strict Rendering Mode" };

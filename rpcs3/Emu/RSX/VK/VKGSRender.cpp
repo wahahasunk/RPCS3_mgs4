@@ -833,7 +833,8 @@ VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 	}
 
 	if ((!backend_config.supports_host_gpu_labels &&
-		!backend_config.supports_asynchronous_compute)||g_cfg.video.mgs4)
+			!backend_config.supports_asynchronous_compute) ||
+		g_cfg.video.mgs4_host_gpu_labels_hack)
 	{
 		// Disable passthrough DMA unless we enable a feature that requires it.
 		// I'm avoiding an explicit checkbox for this until I figure out why host labels don't fix all problems with passthrough.
@@ -2435,7 +2436,7 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 	for (u8 i = 0; i < rsx::limits::color_buffers_count; ++i)
 	{
 		// Flush old address if we keep missing it
-		if (m_surface_info[i].pitch && g_cfg.video.write_color_buffers)
+		if (m_surface_info[i].pitch && g_cfg.video.mgs4wcbhack)
 		{
 			const utils::address_range rsx_range = m_surface_info[i].get_memory_range();
 			m_texture_cache.set_memory_read_flags(rsx_range, rsx::memory_read_flags::flush_once);
@@ -2573,7 +2574,7 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 
 		const utils::address_range surface_range = m_surface_info[index].get_memory_range();
 		//if (g_cfg.video.write_color_buffers)
-		if (g_cfg.video.write_color_buffers)
+		if (g_cfg.video.write_color_buffers || g_cfg.video.mgs4wcbhack)
 		{
 			m_texture_cache.lock_memory_region(
 				*m_current_command_buffer, m_rtts.m_bound_render_targets[index].second, surface_range, true,

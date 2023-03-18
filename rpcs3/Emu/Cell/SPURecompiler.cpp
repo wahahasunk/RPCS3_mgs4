@@ -8849,14 +8849,14 @@ public:
 			const auto a = value<f32[4]>(ci->getOperand(0));
 			const auto b = value<f32[4]>(ci->getOperand(1));
 
-			if (g_cfg.core.spu_approx_xfloat || g_cfg.video.mgs4)
+			if (g_cfg.core.spu_approx_xfloat || g_cfg.video.ClampFM)
 			{
 				if (op.ra == op.rb && !m_interp_magn)
 				{
 					return eval(a * b);
 				}
 
-				if (g_cfg.video.mgs4)
+				if (g_cfg.video.ClampFM)
 				{
 					const auto ca = clamp_smax(a);
 					const auto cb = clamp_smax(b);
@@ -9168,7 +9168,7 @@ public:
 	void FNMS(spu_opcode_t op)
 	{
 		// See FMA.
-		if (g_cfg.core.spu_accurate_xfloat || g_cfg.video.mgs4)
+		if (g_cfg.core.spu_accurate_xfloat || g_cfg.video.accurate_fnms)
 		{
 			//const auto [a, b, c] = get_vrs<f64[4]>(op.ra, op.rb, op.rc);
 			//set_vr(op.rt4, fmuladd(-a, b, c));
