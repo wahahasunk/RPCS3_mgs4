@@ -1811,7 +1811,7 @@ namespace rsx
 			({
 				{ ppu_cmd::set_args, 1 }, u64{1},
 				{ ppu_cmd::lle_call, ptr },
-				{ ppu_cmd::sleep, 0 }
+				//{ ppu_cmd::sleep, 0 }
 			});
 
 			rsx->intr_thread->cmd_notify++;
@@ -1819,8 +1819,8 @@ namespace rsx
 		}
 
 		rsx->reset();
-		rsx->on_frame_end(arg);
-		rsx->request_emu_flip(arg);
+		//rsx->on_frame_end(arg);
+		//rsx->request_emu_flip(arg);
 		vm::_ref<atomic_t<u128>>(rsx->label_addr + 0x10).store(u128{});
 	}
 
@@ -1838,7 +1838,7 @@ namespace rsx
 			({
 				{ ppu_cmd::set_args, 1 }, u64{arg},
 				{ ppu_cmd::lle_call, ptr },
-				{ ppu_cmd::sleep, 0 }
+				//{ ppu_cmd::sleep, 0 }
 			});
 
 			rsx->intr_thread->cmd_notify++;

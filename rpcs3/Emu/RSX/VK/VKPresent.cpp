@@ -146,10 +146,10 @@ void VKGSRender::advance_queued_frames()
 		m_raster_env_ring_info.get_current_put_pos_minus_one());
 
 	m_queued_frames.push_back(m_current_frame);
-	ensure(m_queued_frames.size() <= VK_MAX_ASYNC_FRAMES);
-
-	m_current_queue_index = (m_current_queue_index + 1) % VK_MAX_ASYNC_FRAMES;
-	m_current_frame = &frame_context_storage[m_current_queue_index];
+	//ensure(m_queued_frames.size() <= VK_MAX_ASYNC_FRAMES);
+	ensure(m_queued_frames.size() <= 1);
+	//m_current_queue_index = (m_current_queue_index + 1) % VK_MAX_ASYNC_FRAMES;
+	m_current_frame = &frame_context_storage[0];
 	m_current_frame->flags |= frame_context_state::dirty;
 
 	vk::advance_frame_counter();
@@ -400,7 +400,7 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 
 	if (m_current_frame == &m_aux_frame_context)
 	{
-		m_current_frame = &frame_context_storage[m_current_queue_index];
+		m_current_frame = &frame_context_storage[0];
 		if (m_current_frame->swap_command_buffer)
 		{
 			// Its possible this flip request is triggered by overlays and the flip queue is in undefined state

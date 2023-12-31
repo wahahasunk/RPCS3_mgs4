@@ -909,7 +909,7 @@ VKGSRender::~VKGSRender()
 	if (m_current_frame == &m_aux_frame_context)
 	{
 		// Return resources back to the owner
-		m_current_frame = &frame_context_storage[m_current_queue_index];
+		m_current_frame = &frame_context_storage[0];
 		m_current_frame->swap_storage(m_aux_frame_context);
 		m_current_frame->grab_resources(m_aux_frame_context);
 	}
@@ -1071,8 +1071,10 @@ void VKGSRender::on_invalidate_memory_range(const utils::address_range &range, r
 
 void VKGSRender::on_semaphore_acquire_wait()
 {
-	if (m_flush_requests.pending() ||
+	/*	if (m_flush_requests.pending() ||
 		(async_flip_requested & flip_request::emu_requested) ||
+		(m_queue_status & flush_queue_state::deadlock))*/
+	if (m_flush_requests.pending() ||		
 		(m_queue_status & flush_queue_state::deadlock))
 	{
 		do_local_task(rsx::FIFO::state::lock_wait);
@@ -2436,7 +2438,7 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 	for (u8 i = 0; i < rsx::limits::color_buffers_count; ++i)
 	{
 		// Flush old address if we keep missing it
-		if (m_surface_info[i].pitch && g_cfg.video.mgs4wcbhack)
+		if (m_surface_info[i].pitch && g_cfg.video.write_color_buffers)
 		{
 			const utils::address_range rsx_range = m_surface_info[i].get_memory_range();
 			m_texture_cache.set_memory_read_flags(rsx_range, rsx::memory_read_flags::flush_once);
@@ -2570,7 +2572,7 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 	const auto color_fmt_info = get_compatible_gcm_format(m_framebuffer_layout.color_format);
 	for (u8 index : m_draw_buffers)
 	{
-		if (!m_surface_info[index].address || !m_surface_info[index].pitch) continue;
+		if (!m_surface_info[index].address && !m_surface_info[index].pitch) continue;
 
 		const utils::address_range surface_range = m_surface_info[index].get_memory_range();
 		//if (g_cfg.video.write_color_buffers)

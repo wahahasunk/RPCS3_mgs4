@@ -8635,7 +8635,7 @@ public:
 
 	void FCGT(spu_opcode_t op)
 	{
-		if (g_cfg.core.spu_accurate_xfloat)
+		if (g_cfg.core.spu_accurate_xfloat || g_cfg.core.accurate_FCGT)
 		{
 			set_vr(op.rt, sext<s32[4]>(fcmp_ord(get_vr<f64[4]>(op.ra) > get_vr<f64[4]>(op.rb))));
 			return;
@@ -8699,7 +8699,7 @@ public:
 			else
 			{
 				return eval(sext<s32[4]>(fcmp_ord(a > b)));
-			}
+			}			
 		});
 
 		set_vr(op.rt, fcgt(get_vr<f32[4]>(op.ra), get_vr<f32[4]>(op.rb)));
@@ -8849,23 +8849,22 @@ public:
 			const auto a = value<f32[4]>(ci->getOperand(0));
 			const auto b = value<f32[4]>(ci->getOperand(1));
 
-			if (g_cfg.core.spu_approx_xfloat || g_cfg.video.ClampFM)
+			if (g_cfg.core.spu_approx_xfloat)
 			{
 				if (op.ra == op.rb && !m_interp_magn)
 				{
 					return eval(a * b);
 				}
 
-				if (g_cfg.video.ClampFM)
-				{
-					const auto ca = clamp_smax(a);
-					const auto cb = clamp_smax(b);
-					return eval(ca * cb);
-				}
-
 				const auto ma = sext<s32[4]>(fcmp_uno(a != fsplat<f32[4]>(0.)));
 				const auto mb = sext<s32[4]>(fcmp_uno(b != fsplat<f32[4]>(0.)));
 				return eval(bitcast<f32[4]>(bitcast<s32[4]>(a * b) & ma & mb));
+			}
+			else if (g_cfg.video.ClampFM)
+			{
+				const auto ca = clamp_smax(a);
+				const auto cb = clamp_smax(b);
+				return eval(ca * cb);
 			}
 			else
 			{
@@ -9168,7 +9167,7 @@ public:
 	void FNMS(spu_opcode_t op)
 	{
 		// See FMA.
-		if (g_cfg.core.spu_accurate_xfloat || g_cfg.video.accurate_fnms)
+		if (g_cfg.video.accurate_fnms)
 		{
 			//const auto [a, b, c] = get_vrs<f64[4]>(op.ra, op.rb, op.rc);
 			//set_vr(op.rt4, fmuladd(-a, b, c));
@@ -9181,24 +9180,36 @@ public:
 			set_vr(op.rt4, fma32x4(eval(-(ca)), (cb), get_vr<f32[4]>(op.rc)));
 			return;
 		}
-
-		register_intrinsic("spu_fnms", [&](llvm::CallInst* ci)
+		else
 		{
-			const auto a = value<f32[4]>(ci->getOperand(0));
-			const auto b = value<f32[4]>(ci->getOperand(1));
-			const auto c = value<f32[4]>(ci->getOperand(2));
-
-			if (g_cfg.core.spu_approx_xfloat || g_cfg.core.spu_relaxed_xfloat)
+			if (g_cfg.core.spu_accurate_xfloat)
 			{
-				return fma32x4(eval(-clamp_smax(a)), clamp_smax(b), c);
+				const auto [a, b, c] = get_vrs<f64[4]>(op.ra, op.rb, op.rc);
+				set_vr(op.rt4, fmuladd(-a, b, c));
+				
+				return;
 			}
 			else
 			{
-				return fma32x4(eval(-a), b, c);
-			}
-		});
+				register_intrinsic("spu_fnms", [&](llvm::CallInst* ci)
+					{
+						const auto a = value<f32[4]>(ci->getOperand(0));
+						const auto b = value<f32[4]>(ci->getOperand(1));
+						const auto c = value<f32[4]>(ci->getOperand(2));
 
-		set_vr(op.rt4, fnms(get_vr<f32[4]>(op.ra), get_vr<f32[4]>(op.rb), get_vr<f32[4]>(op.rc)));
+						if (g_cfg.core.spu_approx_xfloat || g_cfg.core.spu_relaxed_xfloat)
+						{
+							return fma32x4(eval(-clamp_smax(a)), clamp_smax(b), c);
+						}
+						/*else
+						{
+							return fma32x4(eval(-a), b, c);
+						}*/
+					});
+			}			
+			set_vr(op.rt4, fnms(get_vr<f32[4]>(op.ra), get_vr<f32[4]>(op.rb), get_vr<f32[4]>(op.rc)));
+		}
+		
 	}
 
 	template <typename T, typename U, typename V>

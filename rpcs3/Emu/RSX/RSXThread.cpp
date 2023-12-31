@@ -3433,15 +3433,10 @@ namespace rsx
 
 	bool thread::request_emu_flip(u32 buffer)
 	{
-		if (is_current_thread()) // requested through command buffer
-		{
-			// NOTE: The flip will clear any queued flip requests
-			handle_emu_flip(buffer);
-		}
-		else // requested 'manually' through ppu syscall
-		{
+
 			if (async_flip_requested & flip_request::emu_requested)
 			{
+				handle_emu_flip(buffer);
 				// ignore multiple requests until previous happens
 				return true;
 			}
@@ -3456,7 +3451,7 @@ namespace rsx
 				// Resubmit possibly-ignored flip on savestate load
 				return false;
 			}
-		}
+		
 
 		return true;
 	}
@@ -3480,13 +3475,14 @@ namespace rsx
 		{						
 			ensure(m_queued_flip.pop(buffer));
 		}*/
-		if (!m_queued_flip.pop(buffer))
+		/*if (!m_queued_flip.pop(buffer))
 		{
 			// Frame was not queued before flipping
 			on_frame_end(buffer, true);
 			ensure(m_queued_flip.pop(buffer));
-		}
-
+		}*/
+		on_frame_end(buffer, true);
+		ensure(m_queued_flip.pop(buffer));
 		double limit = 0.;
 		const auto frame_limit = g_disable_frame_limit ? frame_limit_type::none : g_cfg.video.frame_limit;
 
