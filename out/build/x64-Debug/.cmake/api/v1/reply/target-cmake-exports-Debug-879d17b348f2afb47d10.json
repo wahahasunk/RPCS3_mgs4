@@ -1,0 +1,35 @@
+{
+	"backtrace" : 1,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_custom_target"
+		],
+		"files" : 
+		[
+			"llvm/cmake/modules/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 160,
+				"parent" : 0
+			}
+		]
+	},
+	"id" : "cmake-exports::@48a7ed8e0dae7cac5fff",
+	"name" : "cmake-exports",
+	"paths" : 
+	{
+		"build" : "3rdparty/llvm_build/cmake/modules",
+		"source" : "llvm/cmake/modules"
+	},
+	"sources" : [],
+	"type" : "UTILITY"
+}

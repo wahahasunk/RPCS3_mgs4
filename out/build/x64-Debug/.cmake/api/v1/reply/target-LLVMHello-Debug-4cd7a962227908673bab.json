@@ -1,0 +1,47 @@
+{
+	"backtrace" : 2,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_custom_target",
+			"add_llvm_library"
+		],
+		"files" : 
+		[
+			"llvm/cmake/modules/AddLLVM.cmake",
+			"llvm/lib/Transforms/Hello/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 1,
+				"file" : 1,
+				"line" : 13,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 809,
+				"parent" : 1
+			}
+		]
+	},
+	"folder" : 
+	{
+		"name" : "Loadable modules"
+	},
+	"id" : "LLVMHello::@777b6b92042eed898f0d",
+	"name" : "LLVMHello",
+	"paths" : 
+	{
+		"build" : "3rdparty/llvm_build/lib/Transforms/Hello",
+		"source" : "llvm/lib/Transforms/Hello"
+	},
+	"sources" : [],
+	"type" : "UTILITY"
+}

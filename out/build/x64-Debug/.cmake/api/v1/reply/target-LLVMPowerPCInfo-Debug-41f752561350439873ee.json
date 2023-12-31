@@ -1,0 +1,399 @@
+{
+	"archive" : 
+	{
+		"commandFragments" : 
+		[
+			{
+				"fragment" : "/machine:x64",
+				"role" : "flags"
+			}
+		]
+	},
+	"artifacts" : 
+	[
+		{
+			"path" : "3rdparty/llvm_build/lib/LLVMPowerPCInfo.lib"
+		}
+	],
+	"backtrace" : 4,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_library",
+			"llvm_add_library",
+			"add_llvm_library",
+			"add_llvm_component_library",
+			"install",
+			"add_dependencies",
+			"add_compile_options",
+			"set_property",
+			"llvm_update_compile_flags",
+			"add_definitions",
+			"include",
+			"include_directories",
+			"add_llvm_target"
+		],
+		"files" : 
+		[
+			"llvm/cmake/modules/AddLLVM.cmake",
+			"llvm/lib/Target/PowerPC/TargetInfo/CMakeLists.txt",
+			"CMakeLists.txt",
+			"3rdparty/CMakeLists.txt",
+			"llvm/cmake/modules/HandleLLVMOptions.cmake",
+			"llvm/CMakeLists.txt",
+			"llvm/lib/Target/PowerPC/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 3,
+				"file" : 1,
+				"line" : 1,
+				"parent" : 0
+			},
+			{
+				"command" : 2,
+				"file" : 0,
+				"line" : 771,
+				"parent" : 1
+			},
+			{
+				"command" : 1,
+				"file" : 0,
+				"line" : 796,
+				"parent" : 2
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 538,
+				"parent" : 3
+			},
+			{
+				"command" : 4,
+				"file" : 0,
+				"line" : 823,
+				"parent" : 2
+			},
+			{
+				"command" : 5,
+				"file" : 0,
+				"line" : 669,
+				"parent" : 3
+			},
+			{
+				"file" : 2
+			},
+			{
+				"command" : 6,
+				"file" : 2,
+				"line" : 120,
+				"parent" : 7
+			},
+			{
+				"command" : 8,
+				"file" : 0,
+				"line" : 562,
+				"parent" : 3
+			},
+			{
+				"command" : 7,
+				"file" : 0,
+				"line" : 80,
+				"parent" : 9
+			},
+			{
+				"file" : 3
+			},
+			{
+				"command" : 9,
+				"file" : 3,
+				"line" : 60,
+				"parent" : 11
+			},
+			{
+				"command" : 9,
+				"file" : 2,
+				"line" : 105,
+				"parent" : 7
+			},
+			{
+				"file" : 5
+			},
+			{
+				"command" : 10,
+				"file" : 5,
+				"line" : 713,
+				"parent" : 14
+			},
+			{
+				"file" : 4,
+				"parent" : 15
+			},
+			{
+				"command" : 9,
+				"file" : 4,
+				"line" : 445,
+				"parent" : 16
+			},
+			{
+				"command" : 9,
+				"file" : 4,
+				"line" : 456,
+				"parent" : 16
+			},
+			{
+				"command" : 9,
+				"file" : 2,
+				"line" : 106,
+				"parent" : 7
+			},
+			{
+				"command" : 9,
+				"file" : 4,
+				"line" : 907,
+				"parent" : 16
+			},
+			{
+				"command" : 9,
+				"file" : 4,
+				"line" : 908,
+				"parent" : 16
+			},
+			{
+				"command" : 9,
+				"file" : 4,
+				"line" : 909,
+				"parent" : 16
+			},
+			{
+				"file" : 6
+			},
+			{
+				"command" : 12,
+				"file" : 6,
+				"line" : 21,
+				"parent" : 23
+			},
+			{
+				"command" : 11,
+				"file" : 0,
+				"line" : 1324,
+				"parent" : 24
+			},
+			{
+				"command" : 11,
+				"file" : 5,
+				"line" : 931,
+				"parent" : 14
+			}
+		]
+	},
+	"compileGroups" : 
+	[
+		{
+			"compileCommandFragments" : 
+			[
+				{
+					"fragment" : "-w /D _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS /Zc:inline /Zc:__cplusplus /Zc:strictStrings /Oi /Zc:rvalueCast /bigobj -wd4141 -wd4146 -wd4244 -wd4267 -wd4291 -wd4351 -wd4456 -wd4457 -wd4458 -wd4459 -wd4503 -wd4624 -wd4722 -wd4100 -wd4127 -wd4512 -wd4505 -wd4610 -wd4510 -wd4702 -wd4245 -wd4706 -wd4310 -wd4701 -wd4703 -wd4389 -wd4611 -wd4805 -wd4204 -wd4577 -wd4091 -wd4592 -wd4319 -wd4709 -wd4324 -w14062 -we4238 /Zi /Ob0 /Od /RTC1 -MDd"
+				},
+				{
+					"fragment" : " /EHs-c- /GR-"
+				},
+				{
+					"backtrace" : 8,
+					"fragment" : "/wd4530"
+				},
+				{
+					"backtrace" : 8,
+					"fragment" : "/utf-8"
+				},
+				{
+					"fragment" : "-std:c++14"
+				}
+			],
+			"defines" : 
+			[
+				{
+					"backtrace" : 10,
+					"define" : "GTEST_HAS_RTTI=0"
+				},
+				{
+					"backtrace" : 12,
+					"define" : "HAVE_STRUCT_TIMESPEC=1"
+				},
+				{
+					"backtrace" : 13,
+					"define" : "UNICODE"
+				},
+				{
+					"backtrace" : 17,
+					"define" : "_CRT_NONSTDC_NO_DEPRECATE"
+				},
+				{
+					"backtrace" : 17,
+					"define" : "_CRT_NONSTDC_NO_WARNINGS"
+				},
+				{
+					"backtrace" : 17,
+					"define" : "_CRT_SECURE_NO_DEPRECATE"
+				},
+				{
+					"backtrace" : 17,
+					"define" : "_CRT_SECURE_NO_WARNINGS"
+				},
+				{
+					"backtrace" : 10,
+					"define" : "_HAS_EXCEPTIONS=0"
+				},
+				{
+					"backtrace" : 17,
+					"define" : "_SCL_SECURE_NO_DEPRECATE"
+				},
+				{
+					"backtrace" : 17,
+					"define" : "_SCL_SECURE_NO_WARNINGS"
+				},
+				{
+					"backtrace" : 18,
+					"define" : "_UNICODE"
+				},
+				{
+					"backtrace" : 19,
+					"define" : "_WIN32_WINNT=0x0602"
+				},
+				{
+					"backtrace" : 20,
+					"define" : "__STDC_CONSTANT_MACROS"
+				},
+				{
+					"backtrace" : 21,
+					"define" : "__STDC_FORMAT_MACROS"
+				},
+				{
+					"backtrace" : 22,
+					"define" : "__STDC_LIMIT_MACROS"
+				}
+			],
+			"includes" : 
+			[
+				{
+					"path" : "G:/Source/Repos/rpcs3/out/build/x64-Debug/3rdparty/llvm_build/lib/Target/PowerPC/TargetInfo"
+				},
+				{
+					"path" : "G:/Source/Repos/rpcs3/llvm/lib/Target/PowerPC/TargetInfo"
+				},
+				{
+					"backtrace" : 25,
+					"path" : "G:/Source/Repos/rpcs3/llvm/lib/Target/PowerPC"
+				},
+				{
+					"backtrace" : 25,
+					"path" : "G:/Source/Repos/rpcs3/out/build/x64-Debug/3rdparty/llvm_build/lib/Target/PowerPC"
+				},
+				{
+					"backtrace" : 26,
+					"path" : "G:/Source/Repos/rpcs3/out/build/x64-Debug/3rdparty/llvm_build/include"
+				},
+				{
+					"backtrace" : 26,
+					"path" : "G:/Source/Repos/rpcs3/llvm/include"
+				}
+			],
+			"language" : "CXX",
+			"languageStandard" : 
+			{
+				"backtraces" : 
+				[
+					4
+				],
+				"standard" : "14"
+			},
+			"sourceIndexes" : 
+			[
+				0
+			]
+		}
+	],
+	"dependencies" : 
+	[
+		{
+			"backtrace" : 0,
+			"id" : "LLVMDemangle::@ce7523c6cff32da1d7b1"
+		},
+		{
+			"backtrace" : 0,
+			"id" : "LLVMSupport::@8cae07083690222485c1"
+		},
+		{
+			"backtrace" : 6,
+			"id" : "intrinsics_gen::@cacc3f1edf697578e803"
+		},
+		{
+			"backtrace" : 6,
+			"id" : "PowerPCCommonTableGen::@0098140cc3ce6cf83123"
+		}
+	],
+	"folder" : 
+	{
+		"name" : "Libraries"
+	},
+	"id" : "LLVMPowerPCInfo::@687d7b49c81862f19728",
+	"install" : 
+	{
+		"destinations" : 
+		[
+			{
+				"backtrace" : 5,
+				"path" : "lib"
+			}
+		],
+		"prefix" : 
+		{
+			"path" : "G:/Source/Repos/rpcs3/out/install/x64-Debug"
+		}
+	},
+	"name" : "LLVMPowerPCInfo",
+	"nameOnDisk" : "LLVMPowerPCInfo.lib",
+	"paths" : 
+	{
+		"build" : "3rdparty/llvm_build/lib/Target/PowerPC/TargetInfo",
+		"source" : "llvm/lib/Target/PowerPC/TargetInfo"
+	},
+	"sourceGroups" : 
+	[
+		{
+			"name" : "Source Files",
+			"sourceIndexes" : 
+			[
+				0
+			]
+		},
+		{
+			"name" : "Header Files",
+			"sourceIndexes" : 
+			[
+				1
+			]
+		}
+	],
+	"sources" : 
+	[
+		{
+			"backtrace" : 4,
+			"compileGroupIndex" : 0,
+			"path" : "llvm/lib/Target/PowerPC/TargetInfo/PowerPCTargetInfo.cpp",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 4,
+			"path" : "llvm/lib/Target/PowerPC/TargetInfo/PowerPCTargetInfo.h",
+			"sourceGroupIndex" : 1
+		}
+	],
+	"type" : "STATIC_LIBRARY"
+}

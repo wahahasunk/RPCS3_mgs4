@@ -1,0 +1,76 @@
+{
+	"backtrace" : 0,
+	"backtraceGraph" : 
+	{
+		"commands" : [],
+		"files" : 
+		[
+			"rpcs3/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 0
+			}
+		]
+	},
+	"dependencies" : 
+	[
+		{
+			"id" : "usb-1.0-static::@cc07d46a6aa7e99e6e62"
+		},
+		{
+			"id" : "wolfssl::@2278ec404fc052aeb961"
+		},
+		{
+			"id" : "libcurl::@8cd40cb6f342d65f0ead"
+		},
+		{
+			"id" : "rpcs3_emu::@c89c55fe23365fea4ace"
+		},
+		{
+			"id" : "rpcs3_ui::@d225dab212ec26c41289"
+		}
+	],
+	"id" : "rpcs3_autogen_timestamp_deps::@784a4bcfacc2422f12a7",
+	"isGeneratorProvided" : true,
+	"name" : "rpcs3_autogen_timestamp_deps",
+	"paths" : 
+	{
+		"build" : "rpcs3",
+		"source" : "rpcs3"
+	},
+	"sourceGroups" : 
+	[
+		{
+			"name" : "",
+			"sourceIndexes" : 
+			[
+				0
+			]
+		},
+		{
+			"name" : "CMake Rules",
+			"sourceIndexes" : 
+			[
+				1
+			]
+		}
+	],
+	"sources" : 
+	[
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/rpcs3/CMakeFiles/rpcs3_autogen_timestamp_deps",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/rpcs3/CMakeFiles/rpcs3_autogen_timestamp_deps.rule",
+			"sourceGroupIndex" : 1
+		}
+	],
+	"type" : "UTILITY"
+}
