@@ -271,6 +271,7 @@ void VKGSRender::load_texture_env()
 
 		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(fs_sampler_state[i].get());
 		const auto& tex = rsx::method_registers.fragment_textures[i];
+		const auto previous_format_class = fs_sampler_state[i]->format_class;
 
 		if (m_samplers_dirty || m_textures_dirty[i] || !check_surface_cache_sampler(sampler_state, tex))
 		{
@@ -289,6 +290,12 @@ void VKGSRender::load_texture_env()
 				if (sampler_state->is_cyclic_reference)
 				{
 					check_for_cyclic_refs |= true;
+				}
+
+				if (!m_textures_dirty[i] && sampler_state->format_class != previous_format_class)
+				{
+					// Host details changed but RSX is not aware
+					m_graphics_state |= rsx::fragment_program_state_dirty;
 				}
 
 				bool replace = !fs_sampler_handles[i];
@@ -311,7 +318,7 @@ void VKGSRender::load_texture_env()
 				const auto wrap_s = vk::vk_wrap_mode(tex.wrap_s());
 				const auto wrap_t = vk::vk_wrap_mode(tex.wrap_t());
 				const auto wrap_r = vk::vk_wrap_mode(tex.wrap_r());
-				const auto border_color = vk::get_border_color(tex.border_color());
+				const auto border_color = vk::border_color_t(tex.border_color());
 
 				// Check if non-point filtering can even be used on this format
 				bool can_sample_linear;
@@ -418,6 +425,7 @@ void VKGSRender::load_texture_env()
 
 		auto sampler_state = static_cast<vk::texture_cache::sampled_image_descriptor*>(vs_sampler_state[i].get());
 		const auto& tex = rsx::method_registers.vertex_textures[i];
+		const auto previous_format_class = sampler_state->format_class;
 
 		if (m_samplers_dirty || m_vertex_textures_dirty[i] || !check_surface_cache_sampler(sampler_state, tex))
 		{
@@ -438,11 +446,17 @@ void VKGSRender::load_texture_env()
 					check_for_cyclic_refs |= true;
 				}
 
+				if (!m_vertex_textures_dirty[i] && sampler_state->format_class != previous_format_class)
+				{
+					// Host details changed but RSX is not aware
+					m_graphics_state |= rsx::vertex_program_state_dirty;
+				}
+
 				bool replace = !vs_sampler_handles[i];
 				const VkBool32 unnormalized_coords = !!(tex.format() & CELL_GCM_TEXTURE_UN);
 				const auto min_lod = tex.min_lod();
 				const auto max_lod = tex.max_lod();
-				const auto border_color = vk::get_border_color(tex.border_color());
+				const auto border_color = vk::border_color_t(tex.border_color());
 
 				if (vs_sampler_handles[i])
 				{
@@ -493,7 +507,7 @@ void VKGSRender::load_texture_env()
 			// Sync any async scheduler tasks
 			if (auto ev = async_task_scheduler.get_primary_sync_label())
 			{
-				ev->gpu_wait(*m_current_command_buffer);
+				ev->gpu_wait(*m_current_command_buffer, m_async_compute_dependency_info);
 			}
 		}
 	}
@@ -719,8 +733,17 @@ void VKGSRender::emit_geometry(u32 sub_index)
 		// Rebase vertex bases instead of
 		for (auto& info : m_vertex_layout.interleaved_blocks)
 		{
+			info->vertex_range.second = 0;
 			const auto vertex_base_offset = rsx::method_registers.vertex_data_base_offset();
 			info->real_offset_address = rsx::get_address(rsx::get_vertex_offset_from_base(vertex_base_offset, info->base_offset), info->memory_location);
+		}
+	}
+	else
+	{
+		// Discard cached results
+		for (auto& info : m_vertex_layout.interleaved_blocks)
+		{
+			info->vertex_range.second = 0;
 		}
 	}
 
@@ -846,7 +869,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 	}
 
 	bool reload_state = (!m_current_draw.subdraw_id++);
-	vk::renderpass_op(*m_current_command_buffer, [&](VkCommandBuffer cmd, VkRenderPass pass, VkFramebuffer fbo)
+	vk::renderpass_op(*m_current_command_buffer, [&](const vk::command_buffer& cmd, VkRenderPass pass, VkFramebuffer fbo)
 	{
 		if (get_render_pass() == pass && m_draw_fbo->value == fbo)
 		{
@@ -938,7 +961,7 @@ void VKGSRender::emit_geometry(u32 sub_index)
 void VKGSRender::begin()
 {
 	// Save shader state now before prefetch and loading happens
-	m_interpreter_state = (m_graphics_state & rsx::pipeline_state::invalidate_pipeline_bits);
+	m_interpreter_state = (m_graphics_state.load() & rsx::pipeline_state::invalidate_pipeline_bits);
 
 	rsx::thread::begin();
 
@@ -981,11 +1004,6 @@ void VKGSRender::end()
 			m_aux_frame_context.grab_resources(*m_current_frame);
 			m_current_frame = &m_aux_frame_context;
 		}
-		else if (m_current_frame->used_descriptors)
-		{
-			m_current_frame->descriptor_pool.reset(0);
-			m_current_frame->used_descriptors = 0;
-		}
 
 		ensure(!m_current_frame->swap_command_buffer);
 
@@ -1013,46 +1031,11 @@ void VKGSRender::end()
 	}
 
 	// Allocate descriptor set
-	check_descriptors();
 	m_current_frame->descriptor_set = allocate_descriptor_set();
 
 	// Load program execution environment
 	load_program_env();
 	m_frame_stats.setup_time += m_profiler.duration();
-
-	for (int binding_attempts = 0; binding_attempts < 3; binding_attempts++)
-	{
-		bool out_of_memory;
-		if (!m_shader_interpreter.is_interpreter(m_program)) [[likely]]
-		{
-			out_of_memory = bind_texture_env();
-		}
-		else
-		{
-			out_of_memory = bind_interpreter_texture_env();
-		}
-
-		// TODO: Replace OOM tracking with ref-counting to simplify the logic
-		if (!out_of_memory)
-		{
-			break;
-		}
-
-		if (!on_vram_exhausted(rsx::problem_severity::fatal))
-		{
-			// It is not possible to free memory. Just use placeholder textures. Can cause graphics glitches but shouldn't crash otherwise
-			break;
-		}
-
-		if (m_samplers_dirty)
-		{
-			// Reload texture env if referenced objects were invalidated during OOO handling.
-			load_texture_env();
-		}
-	}
-
-	m_texture_cache.release_uncached_temporary_subresources();
-	m_frame_stats.textures_upload_time += m_profiler.duration();
 
 	// Apply write memory barriers
 	if (auto ds = std::get<1>(m_rtts.m_bound_depth_stencil)) ds->write_barrier(*m_current_command_buffer);
@@ -1064,6 +1047,44 @@ void VKGSRender::end()
 			surface->write_barrier(*m_current_command_buffer);
 		}
 	}
+
+	m_frame_stats.setup_time += m_profiler.duration();
+
+	// Now bind the shader resources. It is important that this takes place after the barriers so that we don't end up with stale descriptors
+	for (int retry = 0; retry < 3; ++retry)
+	{
+		if (retry > 0 && m_samplers_dirty) [[ unlikely ]]
+		{
+			// Reload texture env if referenced objects were invalidated during OOM handling.
+			load_texture_env();
+
+			// Do not trust fragment/vertex texture state after a texture state reset.
+			// NOTE: We don't want to change the program - it's too late for that now. We just need to harmonize the state.
+			m_graphics_state |= rsx::vertex_program_state_dirty | rsx::fragment_program_state_dirty;
+			get_current_fragment_program(fs_sampler_state);
+			get_current_vertex_program(vs_sampler_state);
+			m_graphics_state.clear(rsx::pipeline_state::invalidate_pipeline_bits);
+		}
+
+		const bool out_of_memory = m_shader_interpreter.is_interpreter(m_program)
+			? bind_interpreter_texture_env()
+			: bind_texture_env();
+
+		if (!out_of_memory)
+		{
+			break;
+		}
+
+		// Handle OOM
+		if (!on_vram_exhausted(rsx::problem_severity::fatal))
+		{
+			// It is not possible to free memory. Just use placeholder textures. Can cause graphics glitches but shouldn't crash otherwise
+			break;
+		}
+	}
+
+	m_texture_cache.release_uncached_temporary_subresources();
+	m_frame_stats.textures_upload_time += m_profiler.duration();
 
 	// Final heap check...
 	check_heap_status(VK_HEAP_CHECK_VERTEX_STORAGE | VK_HEAP_CHECK_VERTEX_LAYOUT_STORAGE);

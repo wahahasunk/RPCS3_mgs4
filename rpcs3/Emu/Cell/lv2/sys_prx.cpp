@@ -1,6 +1,8 @@
 #include "stdafx.h"
 #include "sys_prx.h"
 
+#include "Emu/System.h"
+#include "Emu/system_config.h"
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
 #include "Crypto/unself.h"
@@ -15,9 +17,9 @@
 #include "sys_memory.h"
 #include <span>
 
-extern std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, const std::string&, s64, utils::serial* = nullptr);
+extern std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, bool virtual_load, const std::string&, s64, utils::serial* = nullptr);
 extern void ppu_unload_prx(const lv2_prx& prx);
-extern bool ppu_initialize(const ppu_module&, bool = false);
+extern bool ppu_initialize(const ppu_module&, bool check_only = false, u64 file_size = 0);
 extern void ppu_finalize(const ppu_module&);
 extern void ppu_manual_load_imports_exports(u32 imports_start, u32 imports_size, u32 exports_start, u32 exports_size, std::basic_string<bool>& loaded_flags);
 
@@ -261,14 +263,14 @@ static error_code prx_load_module(const std::string& vpath, u64 flags, vm::ptr<s
 
 	u128 klic = g_fxo->get<loaded_npdrm_keys>().last_key();
 
-	ppu_prx_object obj = decrypt_self(std::move(src), reinterpret_cast<u8*>(&klic));
+	ppu_prx_object obj = decrypt_self(std::move(src), reinterpret_cast<u8*>(&klic), nullptr, true);
 
 	if (obj != elf_error::ok)
 	{
-		return CELL_PRX_ERROR_ILLEGAL_LIBRARY;
+		return CELL_PRX_ERROR_UNSUPPORTED_PRX_TYPE;
 	}
 
-	const auto prx = ppu_load_prx(obj, path, file_offset);
+	const auto prx = ppu_load_prx(obj, false, path, file_offset);
 
 	obj.clear();
 
@@ -284,13 +286,13 @@ static error_code prx_load_module(const std::string& vpath, u64 flags, vm::ptr<s
 	return not_an_error(idm::last_id());
 }
 
-fs::file make_file_view(fs::file&& _file, u64 offset);
+fs::file make_file_view(fs::file&& file, u64 offset, u64 size);
 
 std::shared_ptr<void> lv2_prx::load(utils::serial& ar)
 {
 	[[maybe_unused]] const s32 version = GET_SERIALIZATION_VERSION(lv2_prx_overlay);
 
-	const std::string path = vfs::get(ar.operator std::string());
+	const std::string path = vfs::get(ar.pop<std::string>());
 	const s64 offset = ar;
 	const u32 state = ar;
 
@@ -310,35 +312,21 @@ std::shared_ptr<void> lv2_prx::load(utils::serial& ar)
 	{
 		std::basic_string<bool> loaded_flags, external_flags;
 
-		if (version >= 4)
-		{
-			ar(loaded_flags);
-			ar(external_flags);
-		}
+		ar(loaded_flags, external_flags);
 
 		fs::file file{path.substr(0, path.size() - (offset ? fmt::format("_x%x", offset).size() : 0))};
 
 		if (file)
 		{
 			u128 klic = g_fxo->get<loaded_npdrm_keys>().last_key();
-			file = make_file_view(std::move(file), offset);
-			prx = ppu_load_prx(ppu_prx_object{ decrypt_self(std::move(file), reinterpret_cast<u8*>(&klic)) }, path, 0, &ar);
+			file = make_file_view(std::move(file), offset, umax);
+			prx = ppu_load_prx(ppu_prx_object{ decrypt_self(std::move(file), reinterpret_cast<u8*>(&klic)) }, false, path, 0, &ar);
 			prx->m_loaded_flags = std::move(loaded_flags);
 			prx->m_external_loaded_flags = std::move(external_flags);
 
-			if (version == 2 && (state == PRX_STATE_STARTED || state == PRX_STATE_STARTING))
-			{
-				prx->load_exports();
-			}
-
-			if (version >= 4 && state <= PRX_STATE_STARTED)
+			if (state <= PRX_STATE_STARTED)
 			{
 				prx->restore_exports();
-			}
-
-			if (version == 1)
-			{
-				prx->load_exports();
 			}
 
 			ensure(prx);
@@ -768,7 +756,7 @@ void lv2_prx::restore_exports()
 
 	std::basic_string<bool> loaded_flags_empty;
 
-	for (usz start = exports_start, i = 0; start < exports_end; i++, start += vm::read8(start) ? vm::read8(start) : sizeof_export_data)
+	for (u32 start = exports_start, i = 0; start < exports_end; i++, start += vm::read8(start) ? vm::read8(start) : sizeof_export_data)
 	{
 		if (::at32(m_external_loaded_flags, i) || (!m_loaded_flags.empty() && ::at32(m_loaded_flags, i)))
 		{
@@ -841,7 +829,7 @@ error_code _sys_prx_register_module(ppu_thread& ppu, vm::cptr<char> name, vm::pt
 
 	if (info.type & 0x1)
 	{
-		if (g_ps3_process_info.get_cellos_appname() == "vsh.self"sv)
+		if (Emu.IsVsh())
 		{
 			ppu_manual_load_imports_exports(info.lib_stub_ea.addr(), info.lib_stub_size, info.lib_entries_ea.addr(), info.lib_entries_size, *std::make_unique<std::basic_string<bool>>());
 		}
@@ -884,7 +872,7 @@ error_code _sys_prx_register_library(ppu_thread& ppu, vm::ptr<void> library)
 
 	if (flags.front())
 	{
-		const bool success = idm::select<lv2_obj, lv2_prx>([&](u32 id, lv2_prx& prx)
+		const bool success = idm::select<lv2_obj, lv2_prx>([&](u32 /*id*/, lv2_prx& prx)
 		{
 			if (prx.state == PRX_STATE_INITIALIZED)
 			{

@@ -642,12 +642,12 @@ namespace rsx
 			}
 		}
 
-		void osk_dialog::on_button_pressed(pad_button button_press)
+		void osk_dialog::on_button_pressed(pad_button button_press, bool is_auto_repeat)
 		{
-			if (!pad_input_enabled)
+			if (!pad_input_enabled || ignore_device_events)
 				return;
 
-			if (!ignore_device_events && input_device.exchange(CELL_OSKDIALOG_INPUT_DEVICE_PAD) != CELL_OSKDIALOG_INPUT_DEVICE_PAD)
+			if (input_device.exchange(CELL_OSKDIALOG_INPUT_DEVICE_PAD) != CELL_OSKDIALOG_INPUT_DEVICE_PAD)
 			{
 				osk.notice("on_button_pressed: sending CELL_SYSUTIL_OSKDIALOG_INPUT_DEVICE_CHANGED with CELL_OSKDIALOG_INPUT_DEVICE_PAD");
 				sysutil_send_system_cmd(CELL_SYSUTIL_OSKDIALOG_INPUT_DEVICE_CHANGED, CELL_OSKDIALOG_INPUT_DEVICE_PAD);
@@ -886,7 +886,8 @@ namespace rsx
 				break;
 			}
 
-			if (play_cursor_sound)
+			// Play a sound unless this is a fast auto repeat which would induce a nasty noise
+			if (play_cursor_sound && (!is_auto_repeat || m_auto_repeat_ms_interval >= m_auto_repeat_ms_interval_default))
 			{
 				Emu.GetCallbacks().play_sound(fs::get_config_dir() + "sounds/snd_cursor.wav");
 			}
@@ -899,10 +900,10 @@ namespace rsx
 
 		void osk_dialog::on_key_pressed(u32 led, u32 mkey, u32 key_code, u32 out_key_code, bool pressed, std::u32string key)
 		{
-			if (!pressed || !keyboard_input_enabled)
+			if (!pressed || !keyboard_input_enabled || ignore_device_events)
 				return;
 
-			if (!ignore_device_events && input_device.exchange(CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD) != CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD)
+			if (input_device.exchange(CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD) != CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD)
 			{
 				osk.notice("on_key_pressed: sending CELL_SYSUTIL_OSKDIALOG_INPUT_DEVICE_CHANGED with CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD");
 				sysutil_send_system_cmd(CELL_SYSUTIL_OSKDIALOG_INPUT_DEVICE_CHANGED, CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD);
@@ -1620,7 +1621,7 @@ namespace rsx
 
 			update_panel();
 
-			const auto notify = std::make_shared<atomic_t<bool>>(false);
+			const auto notify = std::make_shared<atomic_t<u32>>(0);
 			auto& overlayman = g_fxo->get<display_manager>();
 
 			overlayman.attach_thread_input(
@@ -1630,7 +1631,7 @@ namespace rsx
 
 			while (!Emu.IsStopped() && !*notify)
 			{
-				notify->wait(false, atomic_wait_timeout{1'000'000});
+				notify->wait(0, atomic_wait_timeout{1'000'000});
 			}
 		}
 	}

@@ -34,6 +34,19 @@ struct ppu_thread_cleaner
 	ppu_thread_cleaner(const ppu_thread_cleaner&) = delete;
 
 	ppu_thread_cleaner& operator=(const ppu_thread_cleaner&) = delete;
+
+	ppu_thread_cleaner& operator=(thread_state state) noexcept
+	{
+		reader_lock lock(id_manager::g_mutex);
+
+		if (old)
+		{
+			// It is detached from IDM now so join must be done explicitly now
+			*static_cast<named_thread<ppu_thread>*>(old.get()) = state;
+		}
+
+		return *this;
+	}
 };
 
 void ppu_thread_exit(ppu_thread& ppu, ppu_opcode_t, be_t<u32>*, struct ppu_intrp_func*)
@@ -50,9 +63,14 @@ void ppu_thread_exit(ppu_thread& ppu, ppu_opcode_t, be_t<u32>*, struct ppu_intrp
 
 	if (ppu.call_history.index)
 	{
-		std::string str = fmt::format("%s", ppu.call_history);
+		ppu_log.notice("Calling history: %s", ppu.call_history);
 		ppu.call_history.index = 0;
-		ppu_log.notice("Calling history: %s", str);
+	}
+
+	if (ppu.syscall_history.index)
+	{
+		ppu_log.notice("HLE/LV2 history: %s", ppu.syscall_history);
+		ppu.syscall_history.index = 0;
 	}
 }
 
@@ -61,23 +79,15 @@ constexpr u32 c_max_ppu_name_size = 28;
 void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 {
 	ppu.state += cpu_flag::wait;
-
-	// Need to wait until the current writer finish
-	if (ppu.state & cpu_flag::memory)
-	{
-		while (vm::g_range_lock)
-		{
-			busy_wait(200);
-		}
-	}
+	u64 writer_mask = 0;
 
 	sys_ppu_thread.trace("_sys_ppu_thread_exit(errorcode=0x%llx)", errorcode);
 
 	ppu_join_status old_status;
-	{
-		// Avoid cases where cleaning causes the destructor to be called inside IDM lock scope (for performance)
-		std::shared_ptr<void> old_ppu;
 
+	// Avoid cases where cleaning causes the destructor to be called inside IDM lock scope (for performance)
+	std::shared_ptr<void> old_ppu;
+	{
 		lv2_obj::notify_all_t notify;
 		lv2_obj::prepare_for_sleep(ppu);
 
@@ -108,6 +118,9 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 			old_ppu = g_fxo->get<ppu_thread_cleaner>().clean(std::move(idm::find_unlocked<named_thread<ppu_thread>>(ppu.id)->second));
 		}
 
+		// Get writers mask (wait for all current writers to quit)
+		writer_mask = vm::g_range_lock_bits[1];
+
 		// Unqueue
 		lv2_obj::sleep(ppu);
 		notify.cleanup();
@@ -130,6 +143,21 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 	}
 
 	ppu_thread_exit(ppu, {}, nullptr, nullptr);
+
+	if (old_ppu)
+	{
+		// It is detached from IDM now so join must be done explicitly now
+		*static_cast<named_thread<ppu_thread>*>(old_ppu.get()) = thread_state::finished;
+	}
+
+	// Need to wait until the current writers finish
+	if (ppu.state & cpu_flag::memory)
+	{
+		for (; writer_mask; writer_mask &= vm::g_range_lock_bits[1])
+		{
+			busy_wait(200);
+		}
+	}
 }
 
 s32 sys_ppu_thread_yield(ppu_thread& ppu)
@@ -182,10 +210,6 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 			lv2_obj::prepare_for_sleep(ppu);
 			lv2_obj::sleep(ppu);
 		}
-		else if (result == CELL_EAGAIN)
-		{
-			thread.joiner.notify_one();
-		}
 
 		notify.cleanup();
 		return result;
@@ -199,6 +223,12 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 	if (thread.ret && thread.ret != CELL_EAGAIN)
 	{
 		return thread.ret;
+	}
+
+	if (thread.ret == CELL_EAGAIN)
+	{
+		// Notify thread if waiting for a joiner
+		thread->joiner.notify_one();
 	}
 
 	// Wait for cleanup
@@ -239,7 +269,7 @@ error_code sys_ppu_thread_detach(ppu_thread& ppu, u32 thread_id)
 
 	CellError result = CELL_ESRCH;
 
-	idm::withdraw<named_thread<ppu_thread>>(thread_id, [&](ppu_thread& thread)
+	auto [ptr, _] = idm::withdraw<named_thread<ppu_thread>>(thread_id, [&](ppu_thread& thread)
 	{
 		result = thread.joiner.atomic_op([](ppu_join_status& value) -> CellError
 		{
@@ -268,17 +298,18 @@ error_code sys_ppu_thread_detach(ppu_thread& ppu, u32 thread_id)
 			return {};
 		});
 
-		if (result == CELL_EAGAIN)
-		{
-			thread.joiner.notify_one();
-		}
-
 		// Remove ID on EAGAIN
 		return result != CELL_EAGAIN;
 	});
 
 	if (result)
 	{
+		if (result == CELL_EAGAIN)
+		{
+			// Join and notify thread (it is detached from IDM now so it must be done explicitly now)
+			*ptr = thread_state::finished;
+		}
+
 		return result;
 	}
 
@@ -312,7 +343,7 @@ error_code sys_ppu_thread_set_priority(ppu_thread& ppu, u32 thread_id, s32 prio)
 	if (thread_id == ppu.id)
 	{
 		// Fast path for self
-		if (ppu.prio != prio)
+		if (ppu.prio.load().prio != prio)
 		{
 			lv2_obj::set_priority(ppu, prio);
 		}
@@ -322,10 +353,7 @@ error_code sys_ppu_thread_set_priority(ppu_thread& ppu, u32 thread_id, s32 prio)
 
 	const auto thread = idm::check<named_thread<ppu_thread>>(thread_id, [&, notify = lv2_obj::notify_all_t()](ppu_thread& thread)
 	{
-		if (thread.prio != prio)
-		{
-			lv2_obj::set_priority(thread, prio);
-		}
+		lv2_obj::set_priority(thread, prio);
 	});
 
 	if (!thread)
@@ -341,29 +369,60 @@ error_code sys_ppu_thread_get_priority(ppu_thread& ppu, u32 thread_id, vm::ptr<s
 	ppu.state += cpu_flag::wait;
 
 	sys_ppu_thread.trace("sys_ppu_thread_get_priority(thread_id=0x%x, priop=*0x%x)", thread_id, priop);
+	u32 prio{};
 
 	if (thread_id == ppu.id)
 	{
 		// Fast path for self
+		for (; !ppu.is_stopped(); std::this_thread::yield())
+		{
+			if (reader_lock lock(lv2_obj::g_mutex); cpu_flag::suspend - ppu.state)
+			{
+				prio = ppu.prio.load().prio;
+				break;
+			}
+
+			ppu.check_state();
+			ppu.state += cpu_flag::wait;
+		}
+
 		ppu.check_state();
-		*priop = ppu.prio;
+		*priop = prio;
 		return CELL_OK;
 	}
 
-	u32 prio{};
-
-	const auto thread = idm::check<named_thread<ppu_thread>>(thread_id, [&](ppu_thread& thread)
+	for (; !ppu.is_stopped(); std::this_thread::yield())
 	{
-		prio = thread.prio;
-	});
+		bool check_state = false;
+		const auto thread = idm::check<named_thread<ppu_thread>>(thread_id, [&](ppu_thread& thread)
+		{
+			if (reader_lock lock(lv2_obj::g_mutex); cpu_flag::suspend - ppu.state)
+			{
+				prio = thread.prio.load().prio;
+			}
+			else
+			{
+				check_state = true;
+			}
+		});
 
-	if (!thread)
-	{
-		return CELL_ESRCH;
+		if (check_state)
+		{
+			ppu.check_state();
+			ppu.state += cpu_flag::wait;
+			continue;
+		}
+
+		if (!thread)
+		{
+			return CELL_ESRCH;
+		}
+
+		ppu.check_state();
+		*priop = prio;
+		break;
 	}
 
-	ppu.check_state();
-	*priop = prio;
 	return CELL_OK;
 }
 
@@ -463,9 +522,13 @@ error_code _sys_ppu_thread_create(ppu_thread& ppu, vm::ptr<u64> thread_id, vm::p
 
 	if (threadname)
 	{
-		constexpr u32 max_size = c_max_ppu_name_size; // max size including null terminator
-		const auto pname = threadname.get_ptr();
-		ppu_name.assign(pname, std::find(pname, pname + max_size, '\0'));
+		constexpr u32 max_size = c_max_ppu_name_size - 1; // max size excluding null terminator
+
+		if (!vm::read_string(threadname.addr(), max_size, ppu_name, true))
+		{
+			dct.free(stack_size);
+			return CELL_EFAULT;
+		}
 	}
 
 	const u32 tid = idm::import<named_thread<ppu_thread>>([&]()
@@ -513,7 +576,7 @@ error_code sys_ppu_thread_start(ppu_thread& ppu, u32 thread_id)
 
 		thread.cmd_list
 		({
-			{ppu_cmd::opd_call, 0}, thread.entry_func
+			{ppu_cmd::entry_call, 0},
 		});
 
 		return {};
@@ -532,32 +595,6 @@ error_code sys_ppu_thread_start(ppu_thread& ppu, u32 thread_id)
 	{
 		thread->cmd_notify++;
 		thread->cmd_notify.notify_one();
-
-		// Dirty hack for sound: confirm the creation of _mxr000 event queue
-		if (*thread->ppu_tname.load() == "_cellsurMixerMain"sv)
-		{
-			ppu.check_state();
-			lv2_obj::sleep(ppu);
-
-			while (!idm::select<lv2_obj, lv2_event_queue>([](u32, lv2_event_queue& eq)
-			{
-				//some games do not set event queue name, though key seems constant for them
-				return (eq.name == "_mxr000\0"_u64) || (eq.key == 0x8000cafe02460300);
-			}))
-			{
-				if (ppu.is_stopped())
-				{
-					return {};
-				}
-
-				thread_ctrl::wait_for(50000);
-			}
-
-			if (ppu.test_stopped())
-			{
-				return 0;
-			}
-		}
 	}
 
 	return CELL_OK;
@@ -581,11 +618,16 @@ error_code sys_ppu_thread_rename(ppu_thread& ppu, u32 thread_id, vm::cptr<char> 
 		return CELL_EFAULT;
 	}
 
-	constexpr u32 max_size = c_max_ppu_name_size; // max size including null terminator
-	const auto pname = name.get_ptr();
+	constexpr u32 max_size = c_max_ppu_name_size - 1; // max size excluding null terminator
 
 	// Make valid name
-	auto _name = make_single<std::string>(pname, std::find(pname, pname + max_size, '\0'));
+	std::string out_str;
+	if (!vm::read_string(name.addr(), max_size, out_str, true))
+	{
+		return CELL_EFAULT;
+	}
+
+	auto _name = make_single<std::string>(std::move(out_str));
 
 	// thread_ctrl name is not changed (TODO)
 	sys_ppu_thread.warning(u8"sys_ppu_thread_rename(): Thread renamed to “%s”", *_name);

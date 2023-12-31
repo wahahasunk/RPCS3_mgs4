@@ -1,6 +1,8 @@
 #include "stdafx.h"
 #include "Emu/System.h"
+#include "Emu/system_config.h"
 #include "Emu/Memory/vm_ptr.h"
+#include "Emu/Memory/vm_reservation.h"
 #include "Emu/Memory/vm_locking.h"
 
 #include "Emu/Cell/PPUFunction.h"
@@ -52,6 +54,17 @@
 #include <optional>
 #include <deque>
 #include "util/tsc.hpp"
+#include "util/sysinfo.hpp"
+
+#if defined(ARCH_X64)
+#ifdef _MSC_VER
+#include <intrin.h>
+#include <immintrin.h>
+#else
+#include <x86intrin.h>
+#endif
+#endif
+
 
 extern std::string ppu_get_syscall_name(u64 code);
 
@@ -81,6 +94,12 @@ void fmt_class_string<lv2_protocol>::format(std::string& out, u64 arg)
 
 		return unknown;
 	});
+}
+
+template <>
+void fmt_class_string<lv2_obj::name_64>::format(std::string& out, u64 arg)
+{
+	out += lv2_obj::name64(get_object(arg).data);
 }
 
 static void null_func_(ppu_thread& ppu, ppu_opcode_t, be_t<u32>* this_op, ppu_intrp_func*)
@@ -423,7 +442,7 @@ const std::array<std::pair<ppu_intrp_func_t, std::string_view>, 1024> g_ppu_sysc
 	BIND_SYSC(_sys_game_watchdog_start),                    //372 (0x174)
 	BIND_SYSC(_sys_game_watchdog_stop),                     //373 (0x175)
 	BIND_SYSC(_sys_game_watchdog_clear),                    //374 (0x176)
-	NULL_FUNC(sys_game_set_system_sw_version),              //375 (0x177)  ROOT
+	BIND_SYSC(_sys_game_set_system_sw_version),             //375 (0x177)  ROOT
 	BIND_SYSC(_sys_game_get_system_sw_version),             //376 (0x178)  ROOT
 	BIND_SYSC(sys_sm_set_shop_mode),                        //377 (0x179)  ROOT
 	BIND_SYSC(sys_sm_get_ext_event2),                       //378 (0x17A)  ROOT
@@ -575,7 +594,7 @@ const std::array<std::pair<ppu_intrp_func_t, std::string_view>, 1024> g_ppu_sysc
 	null_func,//BIND_SYSC(sys_usbd_...),                    //555 (0x22B)
 	BIND_SYSC(sys_usbd_get_device_speed),                   //556 (0x22C)
 	null_func,//BIND_SYSC(sys_usbd_...),                    //557 (0x22D)
-	null_func,//BIND_SYSC(sys_usbd_...),                    //558 (0x22E)
+	BIND_SYSC(sys_usbd_unregister_extra_ldd),               //558 (0x22E)
 	BIND_SYSC(sys_usbd_register_extra_ldd),                 //559 (0x22F)
 	null_func,//BIND_SYSC(sys_...),                         //560 (0x230)  ROOT
 	null_func,//BIND_SYSC(sys_...),                         //561 (0x231)  ROOT
@@ -1122,7 +1141,7 @@ public:
 
 		if (!m_stats.empty())
 		{
-			ppu_log.notice("PPU Syscall Usage Stats: %s", m_stats);
+			ppu_log.notice("PPU Syscall Usage Stats:%s", m_stats);
 		}
 	}
 
@@ -1208,6 +1227,7 @@ std::string ppu_get_syscall_name(u64 code)
 DECLARE(lv2_obj::g_mutex);
 DECLARE(lv2_obj::g_ppu){};
 DECLARE(lv2_obj::g_pending){};
+DECLARE(lv2_obj::g_priority_order_tag){};
 
 thread_local DECLARE(lv2_obj::g_to_notify){};
 thread_local DECLARE(lv2_obj::g_postpone_notify_barrier){};
@@ -1229,12 +1249,49 @@ namespace cpu_counter
 	void remove(cpu_thread*) noexcept;
 }
 
+std::string lv2_obj::name64(u64 name_u64)
+{
+	const auto ptr = reinterpret_cast<const char*>(&name_u64);
+
+	// NTS string, ignore invalid/newline characters
+	// Example: "lv2\n\0tx" will be printed as "lv2"
+	std::string str{ptr, std::find(ptr, ptr + 7, '\0')};
+	str.erase(std::remove_if(str.begin(), str.end(), [](uchar c){ return !std::isprint(c); }), str.end());
+
+	return str;
+}
+
 bool lv2_obj::sleep(cpu_thread& cpu, const u64 timeout)
 {
 	// Should already be performed when using this flag
 	if (!g_postpone_notify_barrier)
 	{
 		prepare_for_sleep(cpu);
+	}
+
+	if (cpu.id_type() == 1)
+	{
+		if (u32 addr = static_cast<ppu_thread&>(cpu).res_notify)
+		{
+			static_cast<ppu_thread&>(cpu).res_notify = 0;
+
+			const usz notify_later_idx = std::basic_string_view<const void*>{g_to_notify, std::size(g_to_notify)}.find_first_of(std::add_pointer_t<const void>{});
+
+			if (notify_later_idx != umax)
+			{
+				g_to_notify[notify_later_idx] = &vm::reservation_notifier(addr);
+
+				if (notify_later_idx < std::size(g_to_notify) - 1)
+				{
+					// Null-terminate the list if it ends before last slot
+					g_to_notify[notify_later_idx + 1] = nullptr;
+				}
+			}
+			else
+			{
+				vm::reservation_notifier(addr).notify_all();
+			}
+		}
 	}
 
 	bool result = false;
@@ -1263,6 +1320,31 @@ bool lv2_obj::sleep(cpu_thread& cpu, const u64 timeout)
 
 bool lv2_obj::awake(cpu_thread* thread, s32 prio)
 {
+	if (ppu_thread* ppu = cpu_thread::get_current<ppu_thread>())
+	{
+		if (u32 addr = ppu->res_notify)
+		{
+			ppu->res_notify = 0;
+
+			const usz notify_later_idx = std::basic_string_view<const void*>{g_to_notify, std::size(g_to_notify)}.find_first_of(std::add_pointer_t<const void>{});
+
+			if (notify_later_idx != umax)
+			{
+				g_to_notify[notify_later_idx] = &vm::reservation_notifier(addr);
+
+				if (notify_later_idx < std::size(g_to_notify) - 1)
+				{
+					// Null-terminate the list if it ends before last slot
+					g_to_notify[notify_later_idx + 1] = nullptr;
+				}
+			}
+			else
+			{
+				vm::reservation_notifier(addr).notify_all();
+			}
+		}
+	}
+
 	bool result = false;
 	{
 		std::lock_guard lock(g_mutex);
@@ -1423,16 +1505,53 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 	// Check thread type
 	AUDIT(!cpu || cpu->id_type() == 1);
 
+	bool push_first = false;
+
 	switch (prio)
 	{
 	default:
 	{
 		// Priority set
-		if (static_cast<ppu_thread*>(cpu)->prio.exchange(prio) == prio || !unqueue(g_ppu, static_cast<ppu_thread*>(cpu), &ppu_thread::next_ppu))
+		auto set_prio = [](atomic_t<ppu_thread::ppu_prio_t>& prio, s32 value, bool increment_order_last, bool increment_order_first)
 		{
+			s64 tag = 0;
+
+			if (increment_order_first || increment_order_last)
+			{
+				tag = ++g_priority_order_tag;
+			}
+
+			prio.atomic_op([&](ppu_thread::ppu_prio_t& prio)
+			{
+				prio.prio = value;
+
+				if (increment_order_first)
+				{
+					prio.order = ~tag;
+				}
+				else if (increment_order_last)
+				{
+					prio.order = tag;
+				}
+			});
+		};
+
+		const s64 old_prio = static_cast<ppu_thread*>(cpu)->prio.load().prio;
+
+		// If priority is the same, push ONPROC/RUNNABLE thread to the back of the priority list if it is not the current thread
+		if (old_prio == prio && cpu == cpu_thread::get_current())
+		{
+			set_prio(static_cast<ppu_thread*>(cpu)->prio, prio, false, false);
 			return true;
 		}
 
+		if (!unqueue(g_ppu, static_cast<ppu_thread*>(cpu), &ppu_thread::next_ppu))
+		{
+			set_prio(static_cast<ppu_thread*>(cpu)->prio, prio, old_prio > prio, old_prio < prio);
+			return true;
+		}
+
+		set_prio(static_cast<ppu_thread*>(cpu)->prio, prio, false, false);
 		break;
 	}
 	case yield_cmd:
@@ -1453,7 +1572,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 			{
 				auto ppu2 = ppu->next_ppu;
 
-				if (!ppu2 || ppu2->prio != ppu->prio)
+				if (!ppu2 || ppu2->prio.load().prio != ppu->prio.load().prio)
 				{
 					// Empty 'same prio' threads list
 					return false;
@@ -1463,7 +1582,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 				{
 					const auto next = ppu2->next_ppu;
 
-					if (!next || next->prio != ppu->prio)
+					if (!next || next->prio.load().prio != ppu->prio.load().prio)
 					{
 						break;
 					}
@@ -1496,7 +1615,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 	}
 	}
 
-	const auto emplace_thread = [](cpu_thread* const cpu)
+	const auto emplace_thread = [push_first](cpu_thread* const cpu)
 	{
 		for (auto it = &g_ppu;;)
 		{
@@ -1516,7 +1635,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 			}
 
 			// Use priority, also preserve FIFO order
-			if (!next || next->prio > static_cast<ppu_thread*>(cpu)->prio)
+			if (!next || (push_first ? next->prio.load().prio >= static_cast<ppu_thread*>(cpu)->prio.load().prio : next->prio.load().prio > static_cast<ppu_thread*>(cpu)->prio.load().prio))
 			{
 				atomic_storage<ppu_thread*>::release(static_cast<ppu_thread*>(cpu)->next_ppu, next);
 				atomic_storage<ppu_thread*>::release(*it, static_cast<ppu_thread*>(cpu));
@@ -1574,7 +1693,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 
 			if (is_paused(target->state - cpu_flag::suspend))
 			{
-				target->state.notify_one(cpu_flag::suspend);
+				target->state.notify_one();
 			}
 		}
 	}
@@ -1605,7 +1724,7 @@ void lv2_obj::cleanup()
 
 void lv2_obj::schedule_all(u64 current_time)
 {
-	usz notify_later_idx = 0;
+	usz notify_later_idx = std::basic_string_view<const void*>{g_to_notify, std::size(g_to_notify)}.find_first_of(std::add_pointer_t<const void>{});
 
 	if (!g_pending && g_scheduler_ready)
 	{
@@ -1624,10 +1743,10 @@ void lv2_obj::schedule_all(u64 current_time)
 					continue;
 				}
 
-				if (notify_later_idx == std::size(g_to_notify))
+				if (notify_later_idx >= std::size(g_to_notify))
 				{
 					// Out of notification slots, notify locally (resizable container is not worth it)
-					target->state.notify_one(cpu_flag::signal + cpu_flag::suspend);
+					target->state.notify_one();
 				}
 				else
 				{
@@ -1658,10 +1777,10 @@ void lv2_obj::schedule_all(u64 current_time)
 				ensure(!target->state.test_and_set(cpu_flag::notify));
 
 				// Otherwise notify it to wake itself
-				if (notify_later_idx == std::size(g_to_notify))
+				if (notify_later_idx >= std::size(g_to_notify))
 				{
 					// Out of notification slots, notify locally (resizable container is not worth it)
-					target->state.notify_one(cpu_flag::notify);
+					target->state.notify_one();
 				}
 				else
 				{
@@ -1823,6 +1942,35 @@ void lv2_obj::set_yield_frequency(u64 freq, u64 max_allowed_tsc)
 	g_lv2_preempts_taken.release(0);
 }
 
+#if defined(_MSC_VER)
+#define mwaitx_func
+#define waitpkg_func
+#else
+#define mwaitx_func __attribute__((__target__("mwaitx")))
+#define waitpkg_func __attribute__((__target__("waitpkg")))
+#endif
+
+#if defined(ARCH_X64)
+// Waits for a number of TSC clock cycles in power optimized state
+// Cstate is represented in bits [7:4]+1 cstate. So C0 requires bits [7:4] to be set to 0xf, C1 requires bits [7:4] to be set to 0.
+mwaitx_func static void __mwaitx(u32 cycles, u32 cstate)
+{
+	constexpr u32 timer_enable = 0x2;
+
+	// monitorx will wake if the cache line is written to. We don't want this, so place the monitor value on it's own cache line.
+	alignas(64) u64 monitor_var{};
+	_mm_monitorx(&monitor_var, 0, 0);
+	_mm_mwaitx(timer_enable, cstate, cycles);
+}
+
+// First bit indicates cstate, 0x0 for C.02 state (lower power) or 0x1 for C.01 state (higher power)
+waitpkg_func static void __tpause(u32 cycles, u32 cstate)
+{
+	const u64 tsc = utils::get_tsc() + cycles;
+	_tpause(cstate, tsc);
+}
+#endif
+
 bool lv2_obj::wait_timeout(u64 usec, ppu_thread* cpu, bool scale, bool is_usleep)
 {
 	static_assert(u64{umax} / max_timeout >= 100, "max timeout is not valid for scaling");
@@ -1891,7 +2039,7 @@ bool lv2_obj::wait_timeout(u64 usec, ppu_thread* cpu, bool scale, bool is_usleep
 		u64 remaining = usec - passed;
 #ifdef __linux__
 		// NOTE: Assumption that timer initialization has succeeded
-		u64 host_min_quantum = is_usleep && remaining <= 1000 ? 10 : 50;
+		constexpr u64 host_min_quantum = 10;
 #else
 		// Host scheduler quantum for windows (worst case)
 		// NOTE: On ps3 this function has very high accuracy
@@ -1908,14 +2056,29 @@ bool lv2_obj::wait_timeout(u64 usec, ppu_thread* cpu, bool scale, bool is_usleep
 			if (remaining > host_min_quantum)
 			{
 #ifdef __linux__
-				// Do not wait for the last quantum to avoid loss of accuracy
-				wait_for(remaining - ((remaining % host_min_quantum) + host_min_quantum));
+				// With timerslack set low, Linux is precise for all values above
+				wait_for(remaining);
 #else
 				// Wait on multiple of min quantum for large durations to avoid overloading low thread cpus
 				wait_for(remaining - (remaining % host_min_quantum));
 #endif
 			}
 			// TODO: Determine best value for yield delay
+#if defined(ARCH_X64)
+			else if (utils::has_appropriate_um_wait())
+			{
+				const u32 us_in_tsc_clocks = ::narrow<u32>(remaining * (utils::get_tsc_freq() / 1000000ULL));
+
+				if (utils::has_waitpkg())
+				{
+					__tpause(us_in_tsc_clocks, 0x1);
+				}
+				else
+				{
+					__mwaitx(us_in_tsc_clocks, 0xf0);
+				}
+			}
+#endif
 			else
 			{
 				// Try yielding. May cause long wake latency but helps weaker CPUs a lot by alleviating resource pressure

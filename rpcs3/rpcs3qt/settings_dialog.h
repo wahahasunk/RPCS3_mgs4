@@ -21,7 +21,7 @@ class settings_dialog : public QDialog
 	Q_OBJECT
 
 public:
-	explicit settings_dialog(std::shared_ptr<gui_settings> gui_settings, std::shared_ptr<emu_settings> emu_settings, const int& tab_index = 0, QWidget *parent = nullptr, const GameInfo *game = nullptr);
+	explicit settings_dialog(std::shared_ptr<gui_settings> gui_settings, std::shared_ptr<emu_settings> emu_settings, const int& tab_index = 0, QWidget* parent = nullptr, const GameInfo* game = nullptr, bool create_cfg_from_global_cfg = true);
 	~settings_dialog();
 	int exec() override;
 Q_SIGNALS:
@@ -41,18 +41,24 @@ private:
 	void AddStylesheets();
 	void ApplyStylesheet(bool reset);
 	QString m_current_stylesheet;
+
 	// Gpu tab
 	QString m_old_renderer;
-	// Audio tab
-	std::array<QComboBox*, 4> m_mics_combo;
 
-	int m_tab_index;
+	// Audio tab
+	std::array<QComboBox*, 4> m_mics_combo{};
+
+	// IO tab
+	std::array<QComboBox*, 3> m_midi_type_combo{};
+	std::array<QComboBox*, 3> m_midi_device_combo{};
+
+	int m_tab_index = 0;
 	std::unique_ptr<Ui::settings_dialog> ui;
 	std::shared_ptr<gui_settings> m_gui_settings;
 	std::shared_ptr<emu_settings> m_emu_settings;
 
 	// Discord
-	bool m_use_discord;
+	bool m_use_discord = false;
 	QString m_discord_state;
 
 	// Descriptions
@@ -61,4 +67,5 @@ private:
 	void SubscribeDescription(QLabel* description);
 	void SubscribeTooltip(QObject* object, const QString& tooltip);
 	bool eventFilter(QObject* object, QEvent* event) override;
+	void closeEvent(QCloseEvent* event) override;
 };

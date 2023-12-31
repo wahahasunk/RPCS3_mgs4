@@ -9,6 +9,10 @@
 #include "util/logs.hpp"
 #include "util/to_endian.hpp"
 
+#include "Loader/ELF.h"
+
+#include <span>
+
 LOG_CHANNEL(spu_log, "SPU");
 
 struct lv2_event_queue;
@@ -231,7 +235,7 @@ public:
 
 				// Turn off waiting bit manually (must succeed because waiting bit can only be resetted by the thread pushed to jostling_value)
 				ensure(this->data.bit_test_reset(off_wait));
-				data.notify_one();
+				utils::bless<atomic_t<u32>>(&data)[1].notify_one();
 			}
 
 			// Return true if count has changed from 0 to 1, this condition is considered satisfied even if we pushed a value directly to the special storage for waiting SPUs
@@ -290,7 +294,7 @@ public:
 
 		if ((old & mask) == mask)
 		{
-			data.notify_one();
+			utils::bless<atomic_t<u32>>(&data)[1].notify_one();
 		}
 
 		return static_cast<u32>(old);
@@ -382,7 +386,7 @@ struct spu_channel_4_t
 
 				// Turn off waiting bit manually (must succeed because waiting bit can only be resetted by the thread pushing to jostling_value)
 				ensure(atomic_storage<u8>::exchange(values.raw().waiting, 0));
-				values.notify_one();
+				utils::bless<atomic_t<u32>>(&values)[0].notify_one();
 			}
 
 			return;
@@ -509,7 +513,7 @@ enum FPSCR_EX
 class SPU_FPSCR
 {
 public:
-	u32 _u32[4];
+	u32 _u32[4]{};
 
 	SPU_FPSCR() {}
 
@@ -522,6 +526,7 @@ public:
 	{
 		memset(this, 0, sizeof(*this));
 	}
+
 	//slice -> 0 - 1 (double-precision slice index)
 	//NOTE: slices follow v128 indexing, i.e. slice 0 is RIGHT end of register!
 	//roundTo -> FPSCR_RN_*
@@ -531,6 +536,7 @@ public:
 		//rounding is located in the left end of the FPSCR
 		this->_u32[3] = (this->_u32[3] & ~(3 << shift)) | (roundTo << shift);
 	}
+
 	//Slice 0 or 1
 	u8 checkSliceRounding(u8 slice) const
 	{
@@ -567,11 +573,11 @@ public:
 	//exception: FPSCR_D* bitmask
 	void setDoublePrecisionExceptionFlags(u8 slice, u32 exceptions)
 	{
-		_u32[1+slice] |= exceptions;
+		_u32[1 + slice] |= exceptions;
 	}
 
 	// Write the FPSCR
-	void Write(const v128 & r)
+	void Write(const v128& r)
 	{
 		_u32[3] = r._u32[3] & 0x00000F07;
 		_u32[2] = r._u32[2] & 0x00003F07;
@@ -580,7 +586,7 @@ public:
 	}
 
 	// Read the FPSCR
-	void Read(v128 & r)
+	void Read(v128& r) const
 	{
 		r._u32[3] = _u32[3];
 		r._u32[2] = _u32[2];
@@ -596,10 +602,29 @@ enum class spu_type : u32
 	isolated,
 };
 
+struct spu_memory_segment_dump_data
+{
+	u32 ls_addr;
+	const u8* src_addr;
+	u32 segment_size;
+	u32 flags = umax;
+};
+
+enum class spu_debugger_mode : u32
+{
+	_default,
+	is_float,
+	is_decimal,
+
+	max_mode,
+};
+
+enum class spu_block_hash : u64 {};
+
 class spu_thread : public cpu_thread
 {
 public:
-	virtual void dump_regs(std::string&) const override;
+	virtual void dump_regs(std::string&, std::any& custom_data) const override;
 	virtual std::string dump_callstack() const override;
 	virtual std::vector<std::pair<u32, u32>> dump_callstack_list() const override;
 	virtual std::string dump_misc() const override;
@@ -770,7 +795,7 @@ public:
 
 	std::vector<mfc_cmd_dump> mfc_history;
 	u64 mfc_dump_idx = 0;
-	static constexpr u32 max_mfc_dump_idx = 2048;
+	static constexpr u32 max_mfc_dump_idx = 4096;
 
 	bool in_cpu_work = false;
 	bool allow_interrupts_in_cpu_work = false;
@@ -782,7 +807,7 @@ public:
 	u64 start_time{}; // Starting time of STOP or RDCH bloking function
 	bool unsavable = false; // Flag indicating whether saving the spu thread state is currently unsafe
 
-	atomic_t<u8> debugger_float_mode = 0;
+	atomic_t<spu_debugger_mode> debugger_mode{};
 
 	// PC-based breakpoint list
 	std::array<atomic_t<bool>, SPU_LS_SIZE / 4> local_breakpoints{};
@@ -800,11 +825,12 @@ public:
 	u32 get_mfc_completed() const;
 
 	bool process_mfc_cmd();
-	ch_events_t get_events(u32 mask_hint = -1, bool waiting = false, bool reading = false);
+	ch_events_t get_events(u64 mask_hint = umax, bool waiting = false, bool reading = false);
 	void set_events(u32 bits);
 	void set_interrupt_status(bool enable);
 	bool check_mfc_interrupts(u32 next_pc);
-	bool is_exec_code(u32 addr) const; // Only a hint, do not rely on it other than debugging purposes
+	static bool is_exec_code(u32 addr, std::span<const u8> ls_ptr, u32 base_addr = 0); // Only a hint, do not rely on it other than debugging purposes
+	static std::vector<u32> discover_functions(u32 base_addr, std::span<const u8> ls, bool is_known_addr, u32 /*entry*/);
 	u32 get_ch_count(u32 ch);
 	s64 get_ch_value(u32 ch);
 	bool set_ch_value(u32 ch, u32 value);
@@ -816,6 +842,7 @@ public:
 	std::array<std::shared_ptr<utils::serial>, 32> rewind_captures; // shared_ptr to avoid header inclusion
 	u8 current_rewind_capture_idx = 0;
 
+	static spu_exec_object capture_memory_as_elf(std::span<spu_memory_segment_dump_data> segs, u32 pc_hint = umax);
 	bool capture_state();
 	bool try_load_debug_capture();
 	void wakeup_delay(u32 div = 1) const;
@@ -852,6 +879,7 @@ public:
 
 	bool read_reg(const u32 addr, u32& value);
 	bool write_reg(const u32 addr, const u32 value);
+	static bool test_is_problem_state_register_offset(u32 offset, bool for_read, bool for_write) noexcept;
 
 	static atomic_t<u32> g_raw_spu_ctr;
 	static atomic_t<u32> g_raw_spu_id[5];
@@ -874,12 +902,25 @@ public:
 		operator std::string() const;
 	} thread_name{ this };
 
+	union spu_prio_t
+	{
+		u64 all;
+		bf_t<s64, 0, 9> prio; // Thread priority (0..3071) (firs 9-bits)
+		bf_t<s64, 9, 55> order; // Thread enqueue order (TODO, last 52-bits)
+	};
+
 	// For lv2_obj::schedule<spu_thread>
-	const struct priority_t
+	struct priority_t
 	{
 		const spu_thread* _this;
 
-		operator s32() const;
+		spu_prio_t load() const;
+
+		template <typename Func>
+		auto atomic_op(Func&& func)
+		{
+			return static_cast<std::conditional_t<std::is_void_v<Func>, Func, decltype(_this->group)>>(_this->group)->prio.atomic_op(std::move(func));
+		}
 	} prio{ this };
 };
 
@@ -888,9 +929,9 @@ class spu_function_logger
 	spu_thread& spu;
 
 public:
-	spu_function_logger(spu_thread& spu, const char* func);
+	spu_function_logger(spu_thread& spu, const char* func) noexcept;
 
-	~spu_function_logger()
+	~spu_function_logger() noexcept
 	{
 		if (!spu.is_stopped())
 		{

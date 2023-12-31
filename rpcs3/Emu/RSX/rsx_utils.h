@@ -153,7 +153,7 @@ namespace rsx
 
 	struct avconf
 	{
-		bool _3d  = false;         // Stereo 3D off
+		stereo_render_mode_options stereo_mode = stereo_render_mode_options::disabled;        // Stereo 3D display mode
 		u8 format = 0;             // XRGB
 		u8 aspect = 0;             // AUTO
 		u8 resolution_id = 2;      // 720p
@@ -188,8 +188,10 @@ namespace rsx
 		u16 width;
 		u16 height;
 		u32 pitch;
+		u8  bpp;
+		u32 dma;
 		u32 rsx_address;
-		void *pixels;
+		u8 *pixels;
 	};
 
 	struct blit_dst_info
@@ -206,8 +208,10 @@ namespace rsx
 		f32 scale_x;
 		f32 scale_y;
 		u32 pitch;
+		u8  bpp;
+		u32 dma;
 		u32 rsx_address;
-		void *pixels;
+		u8 *pixels;
 		bool swizzled;
 	};
 
@@ -288,7 +292,9 @@ namespace rsx
 
 	static inline u32 get_location(u32 addr)
 	{
-		return (addr >= rsx::constants::local_mem_base) ?
+		// We don't really care about the actual memory map, it shouldn't be possible to use the mmio bar region anyway
+		constexpr address_range local_mem_range = address_range::start_length(rsx::constants::local_mem_base, 0x1000'0000);
+		return local_mem_range.overlaps(addr) ?
 			CELL_GCM_LOCATION_LOCAL :
 			CELL_GCM_LOCATION_MAIN;
 	}
@@ -378,13 +384,17 @@ namespace rsx
 		u32 offs_x0 = 0; //total y-carry offset for x
 		u32 y_incr = limit_mask;
 
-		u32 adv = pitch / sizeof(T);
+		// NOTE: The swizzled area is always a POT region and we must scan all of it to fill in the linear.
+		// It is assumed that there is no padding on the linear side for simplicity - backend upload/download will crop as needed.
+		// Remember, in cases of swizzling (and also tiled addressing) it is possible for tiled pixels to fall outside of their linear memory region.
+		const u32 pitch_in_blocks = pitch / sizeof(T);
+		u32 row_offset = 0;
 
 		if constexpr (!input_is_swizzled)
 		{
-			for (int y = 0; y < height; ++y)
+			for (int y = 0; y < height; ++y, row_offset += pitch_in_blocks)
 			{
-				auto src = static_cast<const T*>(input_pixels) + y * adv;
+				auto src = static_cast<const T*>(input_pixels) + row_offset;
 				auto dst = static_cast<T*>(output_pixels) + offs_y;
 				offs_x = offs_x0;
 
@@ -404,10 +414,10 @@ namespace rsx
 		}
 		else
 		{
-			for (int y = 0; y < height; ++y)
+			for (int y = 0; y < height; ++y, row_offset += pitch_in_blocks)
 			{
 				auto src = static_cast<const T*>(input_pixels) + offs_y;
-				auto dst = static_cast<T*>(output_pixels) + y * adv;
+				auto dst = static_cast<T*>(output_pixels) + row_offset;
 				offs_x = offs_x0;
 
 				for (int x = 0; x < width; ++x)
@@ -559,8 +569,8 @@ namespace rsx
 	 * Extracts from 'parent' a region that fits in 'child'
 	 */
 	static inline std::tuple<position2u, position2u, size2u> intersect_region(
-		u32 parent_address, u16 parent_w, u16 parent_h, u16 parent_bpp,
-		u32 child_address, u16 child_w, u16 child_h, u32 child_bpp,
+		u32 parent_address, u16 parent_w, u16 parent_h,
+		u32 child_address, u16 child_w, u16 child_h,
 		u32 pitch)
 	{
 		if (child_address < parent_address)
@@ -569,7 +579,7 @@ namespace rsx
 			const auto src_x = 0u;
 			const auto src_y = 0u;
 			const auto dst_y = (offset / pitch);
-			const auto dst_x = (offset % pitch) / child_bpp;
+			const auto dst_x = (offset % pitch);
 			const auto w = std::min<u32>(parent_w, std::max<u32>(child_w, dst_x) - dst_x); // Clamp negatives to 0!
 			const auto h = std::min<u32>(parent_h, std::max<u32>(child_h, dst_y) - dst_y);
 
@@ -579,7 +589,7 @@ namespace rsx
 		{
 			const auto offset = child_address - parent_address;
 			const auto src_y = (offset / pitch);
-			const auto src_x = (offset % pitch) / parent_bpp;
+			const auto src_x = (offset % pitch);
 			const auto dst_x = 0u;
 			const auto dst_y = 0u;
 			const auto w = std::min<u32>(child_w, std::max<u32>(parent_w, src_x) - src_x);
@@ -913,5 +923,27 @@ namespace rsx
 		}
 
 		return base * scale;
+	}
+
+	template<bool _signed = false>
+	u16 encode_fx12(f32 value)
+	{
+		u16 raw = u16(std::abs(value) * 256.);
+
+		if constexpr (!_signed)
+		{
+			return raw;
+		}
+		else
+		{
+			if (value >= 0.f) [[likely]]
+			{
+				return raw;
+			}
+			else
+			{
+				return u16(0 - raw) & 0x1fff;
+			}
+		}
 	}
 }

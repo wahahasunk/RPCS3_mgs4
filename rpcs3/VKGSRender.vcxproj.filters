@@ -89,7 +89,6 @@
     <ClInclude Include="Emu\RSX\VK\VKResolveHelper.h" />
     <ClInclude Include="Emu\RSX\VK\VKResourceManager.h" />
     <ClInclude Include="Emu\RSX\VK\VKShaderInterpreter.h" />
-    <ClInclude Include="Emu\RSX\VK\VKTextOut.h" />
     <ClInclude Include="Emu\RSX\VK\VKTextureCache.h" />
     <ClInclude Include="Emu\RSX\VK\VKVertexProgram.h" />
     <ClInclude Include="Emu\RSX\VK\VulkanAPI.h" />
@@ -170,6 +169,9 @@
     <ClInclude Include="Emu\RSX\VK\VKGSRenderTypes.hpp" />
     <ClInclude Include="Emu\RSX\VK\upscalers\nearest_pass.hpp">
       <Filter>upscalers</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\RSX\VK\vkutils\garbage_collector.h">
+      <Filter>vkutils</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

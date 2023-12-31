@@ -166,7 +166,7 @@ rsx_debugger::rsx_debugger(std::shared_ptr<gui_settings> gui_settings, QWidget* 
 	tex_idx_line->setMaxLength(18);
 	tex_idx_line->setFixedWidth(75);
 	tex_idx_line->setFocus();
-	tex_idx_line->setValidator(new QRegularExpressionValidator(QRegularExpression("^(0[xX])?0*[a-fA-F0-9]{0,8}$")));
+	tex_idx_line->setValidator(new QRegularExpressionValidator(QRegularExpression("^(0[xX])?0*[a-fA-F0-9]{0,8}$"), this));
 
 	QLineEdit* tex_fmt_override_line = new QLineEdit(this);
 	tex_fmt_override_line->setPlaceholderText("00");
@@ -174,7 +174,7 @@ rsx_debugger::rsx_debugger(std::shared_ptr<gui_settings> gui_settings, QWidget* 
 	tex_fmt_override_line->setMaxLength(18);
 	tex_fmt_override_line->setFixedWidth(75);
 	tex_fmt_override_line->setFocus();
-	tex_fmt_override_line->setValidator(new QRegularExpressionValidator(QRegularExpression("^(0[xX])?0*[a-fA-F0-9]{0,2}$")));
+	tex_fmt_override_line->setValidator(new QRegularExpressionValidator(QRegularExpression("^(0[xX])?0*[a-fA-F0-9]{0,2}$"), this));
 
 	hbox_idx_line->addWidget(tex_idx_line);
 	hbox_idx_line->addWidget(tex_fmt_override_line);
@@ -267,6 +267,7 @@ void rsx_debugger::closeEvent(QCloseEvent* event)
 
 	m_gui_settings->SetValue(gui::rsx_states, states);
 	m_gui_settings->SetValue(gui::rsx_geometry, saveGeometry());
+	m_gui_settings->sync();
 
 	QDialog::closeEvent(event);
 }
@@ -392,11 +393,11 @@ void Buffer::ShowContextMenu(const QPoint& pos)
 
 		if (m_image.save(path, "PNG", 100))
 		{
-			rsx_debugger.success("Saved image to '%s'", path.toStdString());
+			rsx_debugger.success("Saved image to '%s'", path);
 		}
 		else
 		{
-			rsx_debugger.error("Failure to save image to '%s'", path.toStdString());
+			rsx_debugger.error("Failure to save image to '%s'", path);
 		}
 	});
 
@@ -425,12 +426,12 @@ namespace
 		{
 		case rsx::surface_color_format::b8:
 		{
-			const u8 value = utils::bless<const u8>(orig_buffer)[idx];
+			const u8 value = read_from_ptr<u8>(orig_buffer, idx);
 			return{ value, value, value };
 		}
 		case rsx::surface_color_format::x32:
 		{
-			const be_t<u32> stored_val = utils::bless<const be_t<u32>>(orig_buffer)[idx];
+			const be_t<u32> stored_val = read_from_ptr<be_t<u32>>(orig_buffer, idx);
 			const u32 swapped_val = stored_val;
 			const f32 float_val = std::bit_cast<f32>(swapped_val);
 			const u8 val = float_val * 255.f;
@@ -440,14 +441,14 @@ namespace
 		case rsx::surface_color_format::x8b8g8r8_o8b8g8r8:
 		case rsx::surface_color_format::x8b8g8r8_z8b8g8r8:
 		{
-			const auto ptr = utils::bless<const u8>(orig_buffer);
+			const auto ptr = reinterpret_cast<const u8*>(orig_buffer.data());
 			return{ ptr[1 + idx * 4], ptr[2 + idx * 4], ptr[3 + idx * 4] };
 		}
 		case rsx::surface_color_format::a8r8g8b8:
 		case rsx::surface_color_format::x8r8g8b8_o8r8g8b8:
 		case rsx::surface_color_format::x8r8g8b8_z8r8g8b8:
 		{
-			const auto ptr = utils::bless<const u8>(orig_buffer);
+			const auto ptr = reinterpret_cast<const u8*>(orig_buffer.data());
 			return{ ptr[3 + idx * 4], ptr[2 + idx * 4], ptr[1 + idx * 4] };
 		}
 		case rsx::surface_color_format::w16z16y16x16:
@@ -580,7 +581,7 @@ void rsx_debugger::OnClickDrawCalls()
 			{
 				for (u32 col = 0; col < width; col++)
 				{
-					const u8 stencil_val = utils::bless<const u8>(orig_buffer)[row * width + col];
+					const u8 stencil_val = reinterpret_cast<const u8*>(orig_buffer.data())[row * width + col];
 					buffer[4 * col + 0 + width * row * 4] = stencil_val;
 					buffer[4 * col + 1 + width * row * 4] = stencil_val;
 					buffer[4 * col + 2 + width * row * 4] = stencil_val;
@@ -628,18 +629,21 @@ void rsx_debugger::GetMemory() const
 	std::string dump;
 	u32 cmd_i = 0;
 
+	std::string str;
+
 	for (const auto& command : frame_debug.command_queue)
 	{
-		const std::string str = rsx::get_pretty_printing_function(command.first)(command.first, command.second);
+		str.clear();
+		rsx::get_pretty_printing_function(command.first)(str, command.first, command.second);
 		m_list_captured_frame->setItem(cmd_i++, 0, new QTableWidgetItem(qstr(str)));
 
 		dump += str;
 		dump += '\n';
 	}
 
-	if (fs::file file = fs::file(fs::get_cache_dir() + "command_dump.log", fs::rewrite))
+	if (!dump.empty())
 	{
-		file.write(dump);
+		fs::write_file(fs::get_cache_dir() + "command_dump.log", fs::rewrite, dump);
 	}
 
 	for (u32 i = 0; i < frame_debug.draw_calls.size(); i++)

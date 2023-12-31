@@ -3,6 +3,7 @@
 #include "localized.h"
 #include "rpcs3_version.h"
 #include "downloader.h"
+#include "gui_settings.h"
 #include "Utilities/StrUtil.h"
 #include "Utilities/File.h"
 #include "Emu/System.h"
@@ -30,7 +31,9 @@
 #include <7zCrc.h>
 #include <7zFile.h>
 
+#ifndef PATH_MAX
 #define PATH_MAX MAX_PATH
+#endif
 
 #else
 #include <unistd.h>
@@ -38,6 +41,11 @@
 #endif
 
 LOG_CHANNEL(update_log, "UPDATER");
+
+update_manager::update_manager(QObject* parent, std::shared_ptr<gui_settings> gui_settings)
+	: QObject(parent), m_gui_settings(std::move(gui_settings))
+{
+}
 
 void update_manager::check_for_updates(bool automatic, bool check_only, bool auto_accept, QWidget* parent)
 {
@@ -171,7 +179,7 @@ bool update_manager::handle_json(bool automatic, bool check_only, bool auto_acce
 
 	const qint64 diff_msec = cur_date.msecsTo(lts_date);
 
-	update_log.notice("Current: %s, latest: %s, difference: %lld ms", cur_str.toStdString(), lts_str.toStdString(), diff_msec);
+	update_log.notice("Current: %s, latest: %s, difference: %lld ms", cur_str, lts_str, diff_msec);
 
 	const Localized localized;
 
@@ -363,6 +371,8 @@ bool update_manager::handle_rpcs3(const QByteArray& data, bool auto_accept)
 	m_downloader->update_progress_dialog(tr("Updating RPCS3"));
 
 #ifdef __APPLE__
+	Q_UNUSED(data);
+	Q_UNUSED(auto_accept);
 	update_log.error("Unsupported operating system.");
 	return false;
 #else
@@ -387,12 +397,10 @@ bool update_manager::handle_rpcs3(const QByteArray& data, bool auto_accept)
 	const std::string orig_path = exe_dir + "rpcs3.exe";
 	const std::wstring wchar_orig_path = utf8_to_wchar(orig_path);
 
-	char temp_path[PATH_MAX];
+	wchar_t wide_temp_path[MAX_PATH + 1]{};
+	GetTempPathW(sizeof(wide_temp_path), wide_temp_path);
 
-	GetTempPathA(sizeof(temp_path) - 1, temp_path);
-	temp_path[PATH_MAX - 1] = 0;
-
-	std::string tmpfile_path = temp_path;
+	std::string tmpfile_path = wchar_to_utf8(wide_temp_path);
 	tmpfile_path += "\\rpcs3_update.7z";
 
 	fs::file tmpfile(tmpfile_path, fs::read + fs::write + fs::create + fs::trunc);
@@ -410,20 +418,16 @@ bool update_manager::handle_rpcs3(const QByteArray& data, bool auto_accept)
 
 	// 7z stuff (most of this stuff is from 7z Util sample and has been reworked to be more stl friendly)
 
-	ISzAlloc allocImp;
-	ISzAlloc allocTempImp;
-
 	CFileInStream archiveStream{};
-	CLookToRead2 lookStream;
+	CLookToRead2 lookStream{};
 	CSzArEx db;
-	SRes res;
 	UInt16 temp_u16[PATH_MAX];
 	u8 temp_u8[PATH_MAX];
 	const usz kInputBufSize = static_cast<usz>(1u << 18u);
 	const ISzAlloc g_Alloc     = {SzAlloc, SzFree};
 
-	allocImp     = g_Alloc;
-	allocTempImp = g_Alloc;
+	ISzAlloc allocImp     = g_Alloc;
+	ISzAlloc allocTempImp = g_Alloc;
 
 	if (InFile_Open(&archiveStream.file, tmpfile_path.c_str()))
 	{
@@ -433,9 +437,8 @@ bool update_manager::handle_rpcs3(const QByteArray& data, bool auto_accept)
 
 	FileInStream_CreateVTable(&archiveStream);
 	LookToRead2_CreateVTable(&lookStream, False);
-	lookStream.buf = nullptr;
 
-	res = SZ_OK;
+	SRes res = SZ_OK;
 	{
 		lookStream.buf = static_cast<Byte*>(ISzAlloc_Alloc(&allocImp, kInputBufSize));
 		if (!lookStream.buf)
@@ -444,7 +447,6 @@ bool update_manager::handle_rpcs3(const QByteArray& data, bool auto_accept)
 		{
 			lookStream.bufSize    = kInputBufSize;
 			lookStream.realStream = &archiveStream.vt;
-			LookToRead2_Init(&lookStream)
 		}
 	}
 
@@ -481,8 +483,8 @@ bool update_manager::handle_rpcs3(const QByteArray& data, bool auto_accept)
 		return false;
 	}
 
-	UInt32 blockIndex    = 0xFFFFFFFF;
-	Byte* outBuffer      = nullptr;
+	UInt32 blockIndex = 0xFFFFFFFF;
+	Byte* outBuffer   = nullptr;
 	usz outBufferSize = 0;
 
 	// Creates temp folder for moving active files
@@ -493,9 +495,8 @@ bool update_manager::handle_rpcs3(const QByteArray& data, bool auto_accept)
 	{
 		usz offset           = 0;
 		usz outSizeProcessed = 0;
-		usz len;
-		unsigned isDir = SzArEx_IsDir(&db, i);
-		len            = SzArEx_GetFileNameUtf16(&db, i, nullptr);
+		const bool isDir = SzArEx_IsDir(&db, i);
+		const usz len    = SzArEx_GetFileNameUtf16(&db, i, nullptr);
 
 		if (len >= PATH_MAX)
 		{
@@ -639,7 +640,8 @@ bool update_manager::handle_rpcs3(const QByteArray& data, bool auto_accept)
 
 	if (!auto_accept)
 	{
-		QMessageBox::information(m_parent, tr("Auto-updater"), tr("Update successful!\nRPCS3 will now restart."));
+		m_gui_settings->ShowInfoBox(tr("Auto-updater"), tr("Update successful!<br>RPCS3 will now restart.<br>"), gui::ib_restart_hint, m_parent);
+		m_gui_settings->sync(); // Make sure to sync before terminating RPCS3
 	}
 
 	Emu.GracefulShutdown(false);

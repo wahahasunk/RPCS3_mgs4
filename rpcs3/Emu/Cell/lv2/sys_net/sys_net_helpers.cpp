@@ -88,10 +88,11 @@ sys_net_error convert_error(bool is_blocking, int native_error, [[maybe_unused]]
 	}
 
 #ifdef _WIN32
-	// Windows will return SYS_NET_ENOTCONN when recvfrom/sendto is called on a socket that is connecting but not yet connected
-	if (is_connecting && result == SYS_NET_ENOTCONN)
+	if (is_connecting)
 	{
-		return SYS_NET_EAGAIN;
+		// Windows will return SYS_NET_ENOTCONN when recvfrom/sendto is called on a socket that is connecting but not yet connected
+		if (result == SYS_NET_ENOTCONN)
+			return SYS_NET_EAGAIN;
 	}
 #endif
 
@@ -188,12 +189,13 @@ s32 network_clear_queue(ppu_thread& ppu)
 
 #ifdef _WIN32
 // Workaround function for WSAPoll not reporting failed connections
-void windows_poll(pollfd* fds, unsigned long nfds, int timeout, bool* connecting)
+void windows_poll(std::vector<pollfd>& fds, unsigned long nfds, int timeout, std::vector<bool>& connecting)
 {
-	ensure(connecting);
+	ensure(fds.size() >= nfds);
+	ensure(connecting.size() >= nfds);
 
 	// Don't call WSAPoll with zero nfds (errors 10022 or 10038)
-	if (std::none_of(fds, fds + nfds, [](pollfd& pfd)
+	if (std::none_of(fds.begin(), fds.begin() + nfds, [](pollfd& pfd)
 			{
 				return pfd.fd != INVALID_SOCKET;
 			}))
@@ -206,7 +208,7 @@ void windows_poll(pollfd* fds, unsigned long nfds, int timeout, bool* connecting
 		return;
 	}
 
-	int r = ::WSAPoll(fds, nfds, timeout);
+	int r = ::WSAPoll(fds.data(), nfds, timeout);
 
 	if (r == SOCKET_ERROR)
 	{

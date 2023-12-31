@@ -10,6 +10,8 @@
 
 #include <clocale>
 
+[[noreturn]] void report_fatal_error(std::string_view text, bool is_html = false, bool include_help_text = true);
+
 // For now, a trivial constructor/destructor. May add command line usage later.
 headless_application::headless_application(int& argc, char** argv) : QCoreApplication(argc, argv)
 {
@@ -58,7 +60,7 @@ void headless_application::InitializeCallbacks()
 
 		return false;
 	};
-	callbacks.call_from_main_thread = [this](std::function<void()> func, atomic_t<bool>* wake_up)
+	callbacks.call_from_main_thread = [this](std::function<void()> func, atomic_t<u32>* wake_up)
 	{
 		RequestCallFromMainThread(std::move(func), wake_up);
 	};
@@ -137,6 +139,14 @@ void headless_application::InitializeCallbacks()
 	callbacks.on_resume = []() {};
 	callbacks.on_stop   = []() {};
 	callbacks.on_ready  = []() {};
+	callbacks.on_emulation_stop_no_response = [](std::shared_ptr<atomic_t<bool>> closed_successfully, int /*seconds_waiting_already*/)
+	{
+		if (!closed_successfully || !*closed_successfully)
+		{
+			report_fatal_error(tr("Stopping emulator took too long."
+						"\nSome thread has probably deadlocked. Aborting.").toStdString());
+		}
+	};
 
 	callbacks.enable_disc_eject  = [](bool) {};
 	callbacks.enable_disc_insert = [](bool) {};
@@ -149,6 +159,7 @@ void headless_application::InitializeCallbacks()
 	callbacks.get_localized_u32string = [](localized_string_id, const char*) -> std::u32string { return {}; };
 
 	callbacks.play_sound = [](const std::string&){};
+	callbacks.add_breakpoint = [](u32 /*addr*/){};
 
 	Emu.SetCallbacks(std::move(callbacks));
 }
@@ -156,7 +167,7 @@ void headless_application::InitializeCallbacks()
 /**
  * Using connects avoids timers being unable to be used in a non-qt thread. So, even if this looks stupid to just call func, it's succinct.
  */
-void headless_application::CallFromMainThread(const std::function<void()>& func, atomic_t<bool>* wake_up)
+void headless_application::CallFromMainThread(const std::function<void()>& func, atomic_t<u32>* wake_up)
 {
 	func();
 

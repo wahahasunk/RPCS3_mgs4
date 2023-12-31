@@ -91,7 +91,7 @@ bool emu_settings::Init()
 	return true;
 }
 
-void emu_settings::LoadSettings(const std::string& title_id)
+void emu_settings::LoadSettings(const std::string& title_id, bool create_config_from_global)
 {
 	m_title_id = title_id;
 
@@ -113,21 +113,25 @@ void emu_settings::LoadSettings(const std::string& title_id)
 			.arg(QString::fromStdString(default_error)), QMessageBox::Ok);
 	}
 
-	// Add global config
-	const std::string global_config_path = fs::get_config_dir() + "config.yml";
-	fs::file config(global_config_path, fs::read + fs::write + fs::create);
-	auto [global_config, global_error] = yaml_load(config.to_string());
-	config.close();
+	if (create_config_from_global)
+	{
+		// Add global config
+		const std::string global_config_path = fs::get_config_dir() + "config.yml";
+		fs::g_tls_error = fs::error::ok;
+		fs::file config(global_config_path, fs::read + fs::create);
+		auto [global_config, global_error] = yaml_load(config ? config.to_string() : "");
 
-	if (global_error.empty())
-	{
-		m_current_settings += global_config;
-	}
-	else
-	{
-		cfg_log.fatal("Failed to load global config %s:\n%s", global_config_path, global_error);
-		QMessageBox::critical(nullptr, tr("Config Error"), tr("Failed to load global config:\nFile: %0\nError: %1")
-			.arg(QString::fromStdString(global_config_path)).arg(QString::fromStdString(global_error)), QMessageBox::Ok);
+		if (config && global_error.empty())
+		{
+			m_current_settings += global_config;
+		}
+		else
+		{
+			config.close();
+			cfg_log.fatal("Failed to load global config %s:\n%s (%s)", global_config_path, global_error, fs::g_tls_error);
+			QMessageBox::critical(nullptr, tr("Config Error"), tr("Failed to load global config:\nFile: %0\nError: %1")
+				.arg(QString::fromStdString(global_config_path)).arg(QString::fromStdString(global_error)), QMessageBox::Ok);
+		}
 	}
 
 	// Add game config
@@ -146,7 +150,7 @@ void emu_settings::LoadSettings(const std::string& title_id)
 
 		if (!custom_config_path.empty())
 		{
-			if ((config = fs::file(custom_config_path, fs::read + fs::write)))
+			if (fs::file config{custom_config_path})
 			{
 				auto [custom_config, custom_error] = yaml_load(config.to_string());
 				config.close();
@@ -161,6 +165,12 @@ void emu_settings::LoadSettings(const std::string& title_id)
 					QMessageBox::critical(nullptr, tr("Config Error"), tr("Failed to load custom config:\nFile: %0\nError: %1")
 						.arg(QString::fromStdString(custom_config_path)).arg(QString::fromStdString(custom_error)), QMessageBox::Ok);
 				}
+			}
+			else if (fs::g_tls_error != fs::error::noent)
+			{
+				cfg_log.fatal("Failed to load custom config %s (file error: %s)", custom_config_path, fs::g_tls_error);
+					QMessageBox::critical(nullptr, tr("Config Error"), tr("Failed to load custom config:\nFile: %0\nError: %1")
+						.arg(QString::fromStdString(custom_config_path)).arg(QString::fromStdString(fmt::format("%s", fs::g_tls_error))), QMessageBox::Ok);
 			}
 		}
 	}
@@ -213,13 +223,13 @@ bool emu_settings::ValidateSettings(bool cleanup)
 			}
 			else
 			{
-				const auto get_full_key = [&keys](const std::string& seperator) -> std::string
+				const auto get_full_key = [&keys](const std::string& separator) -> std::string
 				{
 					std::string full_key;
 					for (usz i = 0; i < keys.size(); i++)
 					{
 						full_key += keys[i];
-						if (i < keys.size() - 1) full_key += seperator;
+						if (i < keys.size() - 1) full_key += separator;
 					}
 					return full_key;
 				};
@@ -325,7 +335,7 @@ void emu_settings::EnhanceComboBox(QComboBox* combobox, emu_settings_type type, 
 			const QVariantList var_list = combobox->itemData(i).toList();
 			if (var_list.size() != 2 || !var_list[0].canConvert<QString>())
 			{
-				fmt::throw_exception("Invalid data found in combobox entry %d (text='%s', listsize=%d, itemcount=%d)", i, sstr(combobox->itemText(i)), var_list.size(), combobox->count());
+				fmt::throw_exception("Invalid data found in combobox entry %d (text='%s', listsize=%d, itemcount=%d)", i, combobox->itemText(i), var_list.size(), combobox->count());
 			}
 
 			if (value == var_list[0].toString())
@@ -381,7 +391,7 @@ void emu_settings::EnhanceComboBox(QComboBox* combobox, emu_settings_type type, 
 			const QVariantList var_list = combobox->itemData(index).toList();
 			if (var_list.size() != 2 || !var_list[0].canConvert<QString>())
 			{
-				fmt::throw_exception("Invalid data found in combobox entry %d (text='%s', listsize=%d, itemcount=%d)", index, sstr(combobox->itemText(index)), var_list.size(), combobox->count());
+				fmt::throw_exception("Invalid data found in combobox entry %d (text='%s', listsize=%d, itemcount=%d)", index, combobox->itemText(index), var_list.size(), combobox->count());
 			}
 			SetSetting(type, sstr(var_list[0]));
 		}
@@ -531,8 +541,7 @@ void emu_settings::EnhanceDateTimeEdit(QDateTimeEdit* date_time_edit, emu_settin
 		if (!val.isValid() || val < min || val > max)
 		{
 			cfg_log.error("EnhanceDateTimeEdit '%s' tried to set an invalid value: %s. Setting to default: %s Allowed range: [%s, %s]",
-				cfg_adapter::get_setting_name(type), val.toString(Qt::ISODate).toStdString(), def.toString(Qt::ISODate).toStdString(),
-				min.toString(Qt::ISODate).toStdString(), max.toString(Qt::ISODate).toStdString());
+				cfg_adapter::get_setting_name(type), val.toString(Qt::ISODate), def.toString(Qt::ISODate), min.toString(Qt::ISODate), max.toString(Qt::ISODate));
 			val = def;
 			m_broken_types.insert(type);
 			SetSetting(type, sstr(def.toString(Qt::ISODate)));
@@ -795,7 +804,7 @@ void emu_settings::EnhanceRadioButton(QButtonGroup* button_group, emu_settings_t
 	{
 		ensure(def_pos >= 0);
 
-		cfg_log.error("EnhanceRadioButton '%s' tried to set an invalid value: %s. Setting to default: %s.", cfg_adapter::get_setting_name(type), sstr(selected), sstr(def));
+		cfg_log.error("EnhanceRadioButton '%s' tried to set an invalid value: %s. Setting to default: %s.", cfg_adapter::get_setting_name(type), selected, def);
 		m_broken_types.insert(type);
 
 		// Select the default option on invalid setting string
@@ -947,6 +956,7 @@ QString emu_settings::GetLocalizedSetting(const QString& original, emu_settings_
 		switch (static_cast<gpu_preset_level>(index))
 		{
 		case gpu_preset_level::_auto: return tr("Auto", "Shader Precision");
+		case gpu_preset_level::ultra: return tr("Ultra", "Shader Precision");
 		case gpu_preset_level::high: return tr("High", "Shader Precision");
 		case gpu_preset_level::low: return tr("Low", "Shader Precision");
 		}
@@ -1011,7 +1021,7 @@ QString emu_settings::GetLocalizedSetting(const QString& original, emu_settings_
 		case camera_flip::none: return tr("No", "Camera flip");
 		case camera_flip::horizontal: return tr("Flip horizontally", "Camera flip");
 		case camera_flip::vertical: return tr("Flip vertically", "Camera flip");
-		case camera_flip::both: return tr("Flip both axis", "Camera flip");
+		case camera_flip::both: return tr("Flip both axes", "Camera flip");
 		}
 		break;
 	case emu_settings_type::Camera:
@@ -1126,7 +1136,6 @@ QString emu_settings::GetLocalizedSetting(const QString& original, emu_settings_
 		switch (static_cast<ppu_decoder_type>(index))
 		{
 		case ppu_decoder_type::_static: return tr("Interpreter (static)", "PPU decoder");
-		case ppu_decoder_type::dynamic: return tr("Interpreter (dynamic)", "PPU decoder");
 		case ppu_decoder_type::llvm: return tr("Recompiler (LLVM)", "PPU decoder");
 		}
 		break;
@@ -1267,6 +1276,31 @@ QString emu_settings::GetLocalizedSetting(const QString& original, emu_settings_
 		case vk_exclusive_fs_mode::enable: return tr("Prefer exclusive fullscreen", "Exclusive Fullscreen Mode");
 		}
 		break;
+	case emu_settings_type::StereoRenderMode:
+		switch (static_cast<stereo_render_mode_options>(index))
+		{
+		case stereo_render_mode_options::disabled: return tr("Disabled", "3D Display Mode");
+		case stereo_render_mode_options::anaglyph: return tr("Anaglyph", "3D Display Mode");
+		case stereo_render_mode_options::side_by_side: return tr("Side-by-side", "3D Display Mode");
+		case stereo_render_mode_options::over_under: return tr("Over-under", "3D Display Mode");
+		}
+		break;
+	case emu_settings_type::MidiDevices:
+		switch (static_cast<midi_device_type>(index))
+		{
+		case midi_device_type::guitar: return tr("Guitar (17 frets)", "Midi Device Type");
+		case midi_device_type::guitar_22fret: return tr("Guitar (22 frets)", "Midi Device Type");
+		case midi_device_type::keyboard: return tr("Keyboard", "Midi Device Type");
+		}
+		break;
+	case emu_settings_type::XFloatAccuracy:
+		switch (static_cast<xfloat_accuracy>(index))
+		{
+		case xfloat_accuracy::accurate: return tr("Accurate XFloat");
+		case xfloat_accuracy::approximate: return tr("Approximate XFloat");
+		case xfloat_accuracy::relaxed: return tr("Relaxed XFloat");
+		case xfloat_accuracy::inaccurate: return tr("Inaccurate XFloat");
+		}
 	default:
 		break;
 	}
@@ -1282,7 +1316,7 @@ QString emu_settings::GetLocalizedSetting(const QString& original, emu_settings_
 				type_string += loc;
 			}
 		}
-		fmt::throw_exception("Missing translation for emu setting (original=%s, type='%s'=%d, index=%d)", original.toStdString(), type_string.empty() ? "?" : type_string, static_cast<int>(type), index);
+		fmt::throw_exception("Missing translation for emu setting (original=%s, type='%s'=%d, index=%d)", original, type_string.empty() ? "?" : type_string, static_cast<int>(type), index);
 	}
 
 	return original;

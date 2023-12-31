@@ -12,22 +12,30 @@
 #include <thread>
 #include <sys/types.h>
 #if _WIN32
-#define read_portable(a, b, c) (recv(a, b, c, 0))
-#define write_portable(a, b, c) (send(a, b, c, 0))
+#define read_portable(a, b, c) (recv(a, b, ::narrow<int>(c), 0))
+#define write_portable(a, b, c) (send(a, b, ::narrow<int>(c), 0))
 #define close_portable(a) (closesocket(a))
 #define bzero(b, len) (memset((b), '\0', (len)), (void)0)
 #include <WinSock2.h>
 #include <windows.h>
+#include <ws2tcpip.h>
 #else
 #define read_portable(a, b, c) (read(a, b, c))
 #define write_portable(a, b, c) (write(a, b, c))
 #define close_portable(a) (close(a))
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <arpa/inet.h>
 #include <poll.h>
 #if defined(__DragonFly__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__APPLE__)
 #include <unistd.h>
 #endif
+#endif
+
+#ifdef _WIN32
+constexpr SOCKET invalid_socket = INVALID_SOCKET;
+#else
+constexpr int invalid_socket = -1;
 #endif
 
 namespace pine
@@ -379,7 +387,7 @@ namespace pine
 
 			m_msgsock = accept(m_sock, 0, 0);
 
-			if (m_msgsock == -1)
+			if (m_msgsock == invalid_socket)
 			{
 				// everything else is non recoverable in our scope
 				// we also mark as recoverable socket errors where it would block a
@@ -533,10 +541,13 @@ namespace pine
 			// yes very good windows s/sun/sin/g sure is fine
 			server.sin_family = AF_INET;
 			// localhost only
-			server.sin_addr.s_addr = inet_addr("127.0.0.1");
+			if (!inet_pton(server.sin_family, "127.0.0.1", &server.sin_addr.s_addr))
+			{
+				fmt::throw_exception("IPC: Failed to convert localhost");
+			}
 			server.sin_port = htons(Impl::get_port());
 
-			if (bind(m_sock, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR)
+			if (bind(m_sock, reinterpret_cast<struct sockaddr*>(&server), sizeof(server)) == SOCKET_ERROR)
 			{
 				Impl::error("IPC: Error while binding to socket! Shutting down...");
 				return;

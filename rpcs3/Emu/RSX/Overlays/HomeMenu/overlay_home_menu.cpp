@@ -68,7 +68,7 @@ namespace rsx
 			}
 		}
 
-		void home_menu_dialog::on_button_pressed(pad_button button_press)
+		void home_menu_dialog::on_button_pressed(pad_button button_press, bool is_auto_repeat)
 		{
 			if (fade_animation.active) return;
 
@@ -86,7 +86,7 @@ namespace rsx
 				break;
 			}
 
-			const page_navigation navigation = m_main_menu.handle_button_press(button_press);
+			const page_navigation navigation = m_main_menu.handle_button_press(button_press, is_auto_repeat, m_auto_repeat_ms_interval);
 
 			switch (navigation)
 			{
@@ -161,7 +161,7 @@ namespace rsx
 			this->on_close = std::move(on_close);
 			visible = true;
 
-			const auto notify = std::make_shared<atomic_t<bool>>(false);
+			const auto notify = std::make_shared<atomic_t<u32>>(0);
 			auto& overlayman = g_fxo->get<display_manager>();
 
 			overlayman.attach_thread_input(

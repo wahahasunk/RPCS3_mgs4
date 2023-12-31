@@ -27,6 +27,16 @@ namespace utils
 
 	bool has_avx512_vnni();
 
+	bool has_avx10();
+
+	bool has_avx10_512();
+
+	u32 avx10_isa_version();
+
+	bool has_avx512_256();
+
+	bool has_avx512_icl_256();
+
 	bool has_xop();
 
 	bool has_clwb();
@@ -42,6 +52,14 @@ namespace utils
 	bool has_erms();
 
 	bool has_fsrm();
+
+	bool has_waitx();
+
+	bool has_waitpkg();
+
+	bool has_appropriate_um_wait();
+
+	bool has_um_wait();
 
 	std::string get_cpu_brand();
 
@@ -71,16 +89,4 @@ namespace utils
 	u64 _get_main_tid();
 
 	inline const u64 main_tid = _get_main_tid();
-
-#ifdef LLVM_AVAILABLE
-
-#if defined(ARCH_X64)
-	const std::string c_llvm_default_triple = "x86_64-unknown-linux-gnu";
-#elif defined(ARCH_ARM64)
-	const std::string c_llvm_default_triple = "arm64-unknown-linux-gnu";
-#else
-	const std::string c_llvm_default_triple = "Unimplemented!"
-#endif
-
-#endif
 }

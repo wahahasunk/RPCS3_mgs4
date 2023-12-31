@@ -15,7 +15,7 @@ std::u16string utf8_to_utf16(std::string_view src);
 
 // Copy null-terminated string from a std::string or a char array to a char array with truncation
 template <typename D, typename T>
-inline void strcpy_trunc(D& dst, const T& src)
+inline void strcpy_trunc(D&& dst, const T& src)
 {
 	const usz count = std::size(src) >= std::size(dst) ? std::max<usz>(std::size(dst), 1) - 1 : std::size(src);
 	std::memcpy(std::data(dst), std::data(src), count);
@@ -124,7 +124,8 @@ namespace fmt
 	}
 
 	std::vector<std::string> split(std::string_view source, std::initializer_list<std::string_view> separators, bool is_skip_empty = true);
-	std::string trim(const std::string& source, const std::string& values = " \t");
+	std::string trim(const std::string& source, std::string_view values = " \t");
+	void trim_back(std::string& source, std::string_view values = " \t");
 
 	template <typename T>
 	std::string merge(const T& source, const std::string& separator)
@@ -173,17 +174,38 @@ namespace fmt
 		return result;
 	}
 
-	std::string to_upper(const std::string& string);
-	std::string to_lower(const std::string& string);
+	std::string to_upper(std::string_view string);
+	std::string to_lower(std::string_view string);
 
 	bool match(const std::string& source, const std::string& mask);
 
 	struct buf_to_hexstring
 	{
-		buf_to_hexstring(const u8* buf, usz len)
-			: buf(buf), len(len) {}
+		buf_to_hexstring(const u8* buf, usz len, usz line_length = 16, bool with_prefix = false)
+			: buf(buf), len(len), line_length(line_length), with_prefix(with_prefix) {}
 
 		const u8* buf;
 		usz len;
+		usz line_length;
+		bool with_prefix;
+	};
+
+	struct string_hash
+	{
+		using hash_type = std::hash<std::string_view>;
+		using is_transparent = void;
+
+		std::size_t operator()(const char* str) const
+		{
+			return hash_type{}(str);
+		}
+		std::size_t operator()(std::string_view str) const
+		{
+			return hash_type{}(str);
+		}
+		std::size_t operator()(std::string const& str) const
+		{
+			return hash_type{}(str);
+		}
 	};
 }

@@ -7,77 +7,66 @@
 #include <QSize>
 #include <QColor>
 #include <QMessageBox>
+#include <QWindow>
 
 namespace gui
 {
-	static QString stylesheet;
+	extern QString stylesheet;
+	extern bool custom_stylesheet_active;
 
 	enum custom_roles
 	{
 		game_role = Qt::UserRole + 1337,
 	};
 
-	enum game_list_columns
+	enum class game_list_columns
 	{
-		column_icon,
-		column_name,
-		column_serial,
-		column_firmware,
-		column_version,
-		column_category,
-		column_path,
-		column_move,
-		column_resolution,
-		column_sound,
-		column_parental,
-		column_last_play,
-		column_playtime,
-		column_compat,
-		column_dir_size,
+		icon,
+		name,
+		serial,
+		firmware,
+		version,
+		category,
+		path,
+		move,
+		resolution,
+		sound,
+		parental,
+		last_play,
+		playtime,
+		compat,
+		dir_size,
 
-		column_count
+		count
 	};
 
-	inline QString get_game_list_column_name(game_list_columns col)
+	enum class trophy_list_columns
 	{
-		switch (col)
-		{
-		case column_icon:
-			return "column_icon";
-		case column_name:
-			return "column_name";
-		case column_serial:
-			return "column_serial";
-		case column_firmware:
-			return "column_firmware";
-		case column_version:
-			return "column_version";
-		case column_category:
-			return "column_category";
-		case column_path:
-			return "column_path";
-		case column_move:
-			return "column_move";
-		case column_resolution:
-			return "column_resolution";
-		case column_sound:
-			return "column_sound";
-		case column_parental:
-			return "column_parental";
-		case column_last_play:
-			return "column_last_play";
-		case column_playtime:
-			return "column_playtime";
-		case column_compat:
-			return "column_compat";
-		case column_dir_size:
-			return "column_dir_size";
-		case column_count:
-			return "";
-		}
+		icon = 0,
+		name = 1,
+		description = 2,
+		type = 3,
+		is_unlocked = 4,
+		id = 5,
+		platinum_link = 6,
+		time_unlocked = 7,
 
-		fmt::throw_exception("get_game_list_column_name: Invalid column");
-	}
+		count
+	};
+
+	enum class trophy_game_list_columns
+	{
+		icon = 0,
+		name = 1,
+		progress = 2,
+		trophies = 3,
+
+		count
+	};
+
+	QString get_trophy_game_list_column_name(trophy_game_list_columns col);
+	QString get_trophy_list_column_name(trophy_list_columns col);
+	QString get_game_list_column_name(game_list_columns col);
 
 	const QSize gl_icon_size_min    = QSize(40, 22);
 	const QSize gl_icon_size_small  = QSize(80, 44);
@@ -101,6 +90,7 @@ namespace gui
 	const QString Settings = "CurrentSettings";
 	const QString DefaultStylesheet = "default";
 	const QString NoStylesheet = "none";
+	const QString NativeStylesheet = "native";
 
 	const QString main_window  = "main_window";
 	const QString game_list    = "GameList";
@@ -135,6 +125,7 @@ namespace gui
 	const gui_save ib_confirm_boot = gui_save(main_window, "confirmationBoxBootGame",  true);
 	const gui_save ib_obsolete_cfg = gui_save(main_window, "confirmationObsoleteCfg",  true);
 	const gui_save ib_same_buttons = gui_save(main_window, "confirmationSameButtons",  true);
+	const gui_save ib_restart_hint = gui_save(main_window, "confirmationRestart",      true);
 
 	const gui_save fd_install_pkg  = gui_save(main_window, "lastExplorePathPKG",  "");
 	const gui_save fd_install_pup  = gui_save(main_window, "lastExplorePathPUP",  "");
@@ -147,6 +138,8 @@ namespace gui
 	const gui_save fd_ext_tar      = gui_save(main_window, "lastExplorePathExTAR",  "");
 	const gui_save fd_insert_disc  = gui_save(main_window, "lastExplorePathDISC", "");
 	const gui_save fd_cfg_check    = gui_save(main_window, "lastExplorePathCfgChk", "");
+	const gui_save fd_save_elf     = gui_save(main_window, "lastExplorePathSaveElf", "");
+	const gui_save fd_save_log     = gui_save(main_window, "lastExplorePathSaveLog", "");
 
 	const gui_save mw_debugger         = gui_save(main_window, "debuggerVisible",  false);
 	const gui_save mw_logger           = gui_save(main_window, "loggerVisible",    true);
@@ -167,6 +160,17 @@ namespace gui
 	const gui_save cat_game_data   = gui_save(game_list, "categoryVisibleGameData",   false);
 	const gui_save cat_unknown     = gui_save(game_list, "categoryVisibleUnknown",    true);
 	const gui_save cat_other       = gui_save(game_list, "categoryVisibleOther",      true);
+
+	const gui_save grid_cat_hdd_game    = gui_save(game_list, "gridCategoryVisibleHDDGame",    true);
+	const gui_save grid_cat_disc_game   = gui_save(game_list, "gridCategoryVisibleDiscGame",   true);
+	const gui_save grid_cat_ps1_game    = gui_save(game_list, "gridCategoryVisiblePS1Game",    true);
+	const gui_save grid_cat_ps2_game    = gui_save(game_list, "gridCategoryVisiblePS2Game",    true);
+	const gui_save grid_cat_psp_game    = gui_save(game_list, "gridCategoryVisiblePSPGame",    true);
+	const gui_save grid_cat_home        = gui_save(game_list, "gridCategoryVisibleHome",       true);
+	const gui_save grid_cat_audio_video = gui_save(game_list, "gridCategoryVisibleAudioVideo", true);
+	const gui_save grid_cat_game_data   = gui_save(game_list, "gridCategoryVisibleGameData",   false);
+	const gui_save grid_cat_unknown     = gui_save(game_list, "gridCategoryVisibleUnknown",    true);
+	const gui_save grid_cat_other       = gui_save(game_list, "gridCategoryVisibleOther",      true);
 
 	const gui_save gl_sortAsc      = gui_save(game_list, "sortAsc",      true);
 	const gui_save gl_sortCol      = gui_save(game_list, "sortCol",      1);
@@ -226,6 +230,8 @@ namespace gui
 	const gui_save gs_height            = gui_save(gs_frame, "height",                720);
 	const gui_save gs_hideMouseIdle     = gui_save(gs_frame, "hideMouseOnIdle",       false);
 	const gui_save gs_hideMouseIdleTime = gui_save(gs_frame, "hideMouseOnIdleTime",   2000);
+	const gui_save gs_geometry          = gui_save(gs_frame, "geometry",              QRect());
+	const gui_save gs_visibility        = gui_save(gs_frame, "visibility",            QWindow::Visibility::AutomaticVisibility);
 
 	const gui_save tr_icon_color    = gui_save(trophy, "icon_color",    gl_icon_color);
 	const gui_save tr_icon_height   = gui_save(trophy, "icon_height",   75);
@@ -275,29 +281,36 @@ class gui_settings : public settings
 public:
 	explicit gui_settings(QObject* parent = nullptr);
 
-	bool GetCategoryVisibility(int cat) const;
+	bool GetCategoryVisibility(int cat, bool is_list_mode) const;
 
 	void ShowConfirmationBox(const QString& title, const QString& text, const gui_save& entry, int* result, QWidget* parent);
 	void ShowInfoBox(const QString& title, const QString& text, const gui_save& entry, QWidget* parent);
 	bool GetBootConfirmation(QWidget* parent, const gui_save& gui_save_entry = gui_save());
 
 	logs::level GetLogLevel() const;
-	bool GetGamelistColVisibility(int col) const;
+	bool GetTrophyGamelistColVisibility(gui::trophy_game_list_columns col) const;
+	bool GetTrophylistColVisibility(gui::trophy_list_columns col) const;
+	bool GetGamelistColVisibility(gui::game_list_columns col) const;
 	QColor GetCustomColor(int col) const;
 	QStringList GetStylesheetEntries() const;
-	QStringList GetGameListCategoryFilters() const;
+	QStringList GetGameListCategoryFilters(bool is_list_mode) const;
 
-public Q_SLOTS:
+	static QSize SizeFromSlider(int pos);
+
 	/** Sets the visibility of the chosen category. */
-	void SetCategoryVisibility(int cat, const bool& val) const;
+	void SetCategoryVisibility(int cat, bool val, bool is_list_mode) const;
 
-	void SetGamelistColVisibility(int col, bool val) const;
+	void SetTrophyGamelistColVisibility(gui::trophy_game_list_columns col, bool val) const;
+	void SetTrophylistColVisibility(gui::trophy_list_columns col, bool val) const;
+	void SetGamelistColVisibility(gui::game_list_columns col, bool val) const;
 
 	void SetCustomColor(int col, const QColor& val) const;
 
-	static QSize SizeFromSlider(int pos);
-	static gui_save GetGuiSaveForColumn(int col);
-
 private:
+	static gui_save GetGuiSaveForTrophyGameColumn(gui::trophy_game_list_columns col);
+	static gui_save GetGuiSaveForTrophyColumn(gui::trophy_list_columns col);
+	static gui_save GetGuiSaveForGameColumn(gui::game_list_columns col);
+	static gui_save GetGuiSaveForCategory(int cat, bool is_list_mode);
+
 	void ShowBox(QMessageBox::Icon icon, const QString& title, const QString& text, const gui_save& entry, int* result, QWidget* parent, bool always_on_top);
 };

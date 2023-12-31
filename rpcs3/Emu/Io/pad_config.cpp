@@ -4,35 +4,69 @@
 
 LOG_CHANNEL(input_log, "Input");
 
-bool cfg_input::load(const std::string& title_id, const std::string& profile, bool strict)
+extern std::string g_input_config_override;
+
+std::vector<std::string> cfg_pad::get_buttons(const std::string& str)
 {
-	input_log.notice("Loading pad config (title_id='%s', profile='%s', strict=%d)", title_id, profile, strict);
+	std::vector<std::string> vec = fmt::split(str, {","});
+
+	// Handle special case: string contains separator itself as configured value
+	if (str == "," || str.find(",,") != umax)
+	{
+		vec.push_back(",");
+	}
+
+	// Remove duplicates
+	std::sort(vec.begin(), vec.end());
+	vec.erase(std::unique(vec.begin(), vec.end()), vec.end());
+
+	return vec;
+}
+
+std::string cfg_pad::get_buttons(std::vector<std::string> vec)
+{
+	// Remove duplicates
+	std::sort(vec.begin(), vec.end());
+	vec.erase(std::unique(vec.begin(), vec.end()), vec.end());
+
+	return fmt::merge(vec, ",");
+}
+
+bool cfg_input::load(const std::string& title_id, const std::string& config_file, bool strict)
+{
+	input_log.notice("Loading pad config (title_id='%s', config_file='%s', strict=%d)", title_id, config_file, strict);
 
 	std::string cfg_name;
 
-	// Check custom config first
-	if (!title_id.empty())
+	// Check configuration override first
+	if (!strict && !g_input_config_override.empty())
+	{
+		cfg_name = rpcs3::utils::get_input_config_dir() + g_input_config_override + ".yml";
+	}
+
+	// Check custom config next
+	if (!title_id.empty() && !fs::is_file(cfg_name))
 	{
 		cfg_name = rpcs3::utils::get_custom_input_config_path(title_id);
 	}
 
-	// Check active global profile next
-	if ((title_id.empty() || !strict) && !fs::is_file(cfg_name))
+	// Check active global configuration next
+	if ((title_id.empty() || !strict) && !config_file.empty() && !fs::is_file(cfg_name))
 	{
-		cfg_name = rpcs3::utils::get_input_config_dir() + profile + ".yml";
+		cfg_name = rpcs3::utils::get_input_config_dir() + config_file + ".yml";
 	}
 
-	// Fallback to default profile
+	// Fallback to default configuration
 	if (!strict && !fs::is_file(cfg_name))
 	{
-		cfg_name = rpcs3::utils::get_input_config_dir() + g_cfg_profile.default_profile + ".yml";
+		cfg_name = rpcs3::utils::get_input_config_dir() + g_cfg_input_configs.default_config + ".yml";
 	}
 
 	from_default();
 
 	if (fs::file cfg_file{ cfg_name, fs::read })
 	{
-		input_log.notice("Loading pad profile: '%s'", cfg_name);
+		input_log.notice("Loading input configuration: '%s'", cfg_name);
 
 		if (std::string content = cfg_file.to_string(); !content.empty())
 		{
@@ -41,7 +75,7 @@ bool cfg_input::load(const std::string& title_id, const std::string& profile, bo
 	}
 
 	// Add keyboard by default
-	input_log.notice("Pad profile empty. Adding default keyboard pad handler");
+	input_log.notice("Input configuration empty. Adding default keyboard pad handler");
 	player[0]->handler.from_string(fmt::format("%s", pad_handler::keyboard));
 	player[0]->device.from_string(pad::keyboard_device_name.data());
 	player[0]->buddy_device.from_string(""sv);
@@ -49,14 +83,14 @@ bool cfg_input::load(const std::string& title_id, const std::string& profile, bo
 	return false;
 }
 
-void cfg_input::save(const std::string& title_id, const std::string& profile) const
+void cfg_input::save(const std::string& title_id, const std::string& config_file) const
 {
 	std::string cfg_name;
 
 	if (title_id.empty())
 	{
-		cfg_name = rpcs3::utils::get_input_config_dir() + profile + ".yml";
-		input_log.notice("Saving pad config profile '%s' to '%s'", profile, cfg_name);
+		cfg_name = rpcs3::utils::get_input_config_dir() + config_file + ".yml";
+		input_log.notice("Saving input configuration '%s' to '%s'", config_file, cfg_name);
 	}
 	else
 	{
@@ -69,20 +103,18 @@ void cfg_input::save(const std::string& title_id, const std::string& profile) co
 		input_log.fatal("Failed to create path: %s (%s)", cfg_name, fs::g_tls_error);
 	}
 
-	fs::pending_file cfg_file(cfg_name);
-
-	if (!cfg_file.file || (cfg_file.file.write(to_string()), !cfg_file.commit()))
+	if (!cfg::node::save(cfg_name))
 	{
 		input_log.error("Failed to save pad config to '%s' (error=%s)", cfg_name, fs::g_tls_error);
 	}
 }
 
-cfg_profile::cfg_profile()
-	: path(rpcs3::utils::get_input_config_root() + "/active_profiles.yml")
+cfg_input_configurations::cfg_input_configurations()
+	: path(rpcs3::utils::get_input_config_root() + "/active_input_configurations.yml")
 {
 }
 
-bool cfg_profile::load()
+bool cfg_input_configurations::load()
 {
 	if (fs::file cfg_file{ path, fs::read })
 	{
@@ -93,14 +125,12 @@ bool cfg_profile::load()
 	return false;
 }
 
-void cfg_profile::save() const
+void cfg_input_configurations::save() const
 {
-	input_log.notice("Saving pad profile config to '%s'", path);
+	input_log.notice("Saving input configurations config to '%s'", path);
 
-	fs::pending_file cfg_file(path);
-
-	if (!cfg_file.file || (cfg_file.file.write(to_string()), !cfg_file.commit()))
+	if (!cfg::node::save(path))
 	{
-		input_log.error("Failed to save pad profile config to '%s' (error=%s)", path, fs::g_tls_error);
+		input_log.error("Failed to save input configurations config to '%s' (error=%s)", path, fs::g_tls_error);
 	}
 }

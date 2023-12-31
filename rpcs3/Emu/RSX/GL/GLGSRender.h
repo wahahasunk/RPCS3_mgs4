@@ -5,7 +5,6 @@
 #include "GLTextureCache.h"
 #include "GLRenderTargets.h"
 #include "GLProgramBuffer.h"
-#include "GLTextOut.h"
 #include "GLOverlays.h"
 #include "GLShaderInterpreter.h"
 
@@ -14,14 +13,14 @@
 
 #include "glutils/ring_buffer.h"
 
-#ifdef _WIN32
+#ifdef _MSC_VER
 #pragma comment(lib, "opengl32.lib")
 #endif
 
 namespace gl
 {
-	using vertex_cache = rsx::vertex_cache::default_vertex_cache<rsx::vertex_cache::uploaded_range<GLenum>, GLenum>;
-	using weak_vertex_cache = rsx::vertex_cache::weak_vertex_cache<GLenum>;
+	using vertex_cache = rsx::vertex_cache::default_vertex_cache<rsx::vertex_cache::uploaded_range>;
+	using weak_vertex_cache = rsx::vertex_cache::weak_vertex_cache;
 	using null_vertex_cache = vertex_cache;
 
 	using shader_cache = rsx::shaders_cache<void*, GLProgramBuffer>;
@@ -114,7 +113,6 @@ class GLGSRender : public GSRender, public ::rsx::reports::ZCULL_control
 
 	bool manually_flush_ring_buffers = false;
 
-	gl::text_writer m_text_printer;
 	gl::ui_overlay_renderer m_ui_renderer;
 	gl::video_out_calibration_pass m_video_output_pass;
 
@@ -175,7 +173,7 @@ public:
 
 	gl::work_item& post_flush_request(u32 address, gl::texture_cache::thrashed_set& flush_data);
 
-	bool scaled_image_from_memory(rsx::blit_src_info& src_info, rsx::blit_dst_info& dst_info, bool interpolate) override;
+	bool scaled_image_from_memory(const rsx::blit_src_info& src_info, const rsx::blit_dst_info& dst_info, bool interpolate) override;
 
 	void begin_occlusion_query(rsx::reports::occlusion_query_info* query) override;
 	void end_occlusion_query(rsx::reports::occlusion_query_info* query) override;

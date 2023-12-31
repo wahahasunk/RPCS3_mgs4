@@ -50,7 +50,7 @@ lv2_memory::lv2_memory(utils::serial& ar)
 	, flags(ar)
 	, key(ar)
 	, pshared(ar)
-	, ct(lv2_memory_container::search(ar.operator u32()))
+	, ct(lv2_memory_container::search(ar.pop<u32>()))
 	, shm([&](u32 addr)
 	{
 		if (addr)
@@ -61,7 +61,7 @@ lv2_memory::lv2_memory(utils::serial& ar)
 		const auto _shm = std::make_shared<utils::shm>(size, 1);
 		ar(std::span(_shm->map_self(), size));
 		return _shm;
-	}(ar.operator u32()))
+	}(ar.pop<u32>()))
 	, counter(ar)
 {
 #ifndef _WIN32
@@ -174,6 +174,8 @@ error_code sys_mmapper_allocate_address(ppu_thread& ppu, u64 size, u64 flags, u6
 	{
 		if (const auto area = vm::find_map(static_cast<u32>(size), static_cast<u32>(alignment), flags & SYS_MEMORY_PAGE_SIZE_MASK))
 		{
+			sys_mmapper.warning("sys_mmapper_allocate_address(): Found VM 0x%x area (vsize=0x%x)", area->addr, size);
+
 			ppu.check_state();
 			*alloc_addr = area->addr;
 			return CELL_OK;
@@ -722,8 +724,9 @@ error_code sys_mmapper_search_and_map(ppu_thread& ppu, u32 start_addr, u32 mem_i
 		return CELL_ENOMEM;
 	}
 
-	vm::lock_sudo(addr, mem->size);
+	sys_mmapper.notice("sys_mmapper_search_and_map(): Found 0x%x address", addr);
 
+	vm::lock_sudo(addr, mem->size);
 	ppu.check_state();
 	*alloc_addr = addr;
 	return CELL_OK;
@@ -846,16 +849,20 @@ error_code mmapper_thread_recover_page_fault(cpu_thread* cpu)
 		}
 
 		pf_events.events.erase(pf_event_ind);
+
+		if (cpu->id_type() == 1u)
+		{
+			lv2_obj::awake(cpu);
+		}
+		else
+		{
+			cpu->state += cpu_flag::signal;
+		}
 	}
 
-	if (cpu->id_type() == 1u)
+	if (cpu->state & cpu_flag::signal)
 	{
-		lv2_obj::awake(cpu);
-	}
-	else
-	{
-		cpu->state += cpu_flag::signal;
-		cpu->state.notify_one(cpu_flag::signal);
+		cpu->state.notify_one();
 	}
 
 	return CELL_OK;

@@ -48,6 +48,17 @@ static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 		// Unconditional set
 		while (!render->new_get_put.compare_and_swap_test(u64{umax}, get_put))
 		{
+			// Wait for the first store to complete (or be aborted)
+			if (auto cpu = cpu_thread::get_current())
+			{
+				if (cpu->state & cpu_flag::exit)
+				{
+					// Retry
+					cpu->state += cpu_flag::again;
+					return;
+				}
+			}
+
 			utils::pause();
 		}
 
@@ -60,12 +71,13 @@ static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 		// Wait for the first store to complete (or be aborted)
 		while (render->new_get_put != usz{umax})
 		{
-			if (Emu.IsStopped())
+			if (cpu->state & cpu_flag::exit)
 			{
 				if (render->new_get_put.compare_and_swap_test(get_put, umax))
 				{
 					// Retry
 					cpu->state += cpu_flag::again;
+					return;
 				}
 			}
 
@@ -165,6 +177,12 @@ error_code sys_rsx_memory_allocate(cpu_thread& cpu, vm::ptr<u32> mem_handle, vm:
 	if (vm::falloc(rsx::constants::local_mem_base, size, vm::video))
 	{
 		rsx::get_current_renderer()->local_mem_size = size;
+
+		if (u32 addr = rsx::get_current_renderer()->driver_info)
+		{
+			vm::_ref<RsxDriverInfo>(addr).memory_size = size;
+		}
+
 		*mem_addr = rsx::constants::local_mem_base;
 		*mem_handle = 0x5a5a5a5b;
 		return CELL_OK;
@@ -240,6 +258,8 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 		return CELL_ENOMEM;
 	}
 
+	sys_rsx.warning("sys_rsx_context_allocate(): Mapped address 0x%x", dma_address);
+
 	*lpar_dma_control = dma_address;
 	*lpar_driver_info = dma_address + 0x100000;
 	*lpar_reports = dma_address + 0x200000;
@@ -271,6 +291,7 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 
 	driverInfo.version_driver = 0x211;
 	driverInfo.version_gpu = 0x5c;
+	driverInfo.memory_size = render->local_mem_size;
 	driverInfo.nvcore_frequency = 500000000; // 0x1DCD6500
 	driverInfo.memory_frequency = 650000000; // 0x26BE3680
 	driverInfo.reportsNotifyOffset = 0x1000;
@@ -932,6 +953,8 @@ error_code sys_rsx_device_map(cpu_thread& cpu, vm::ptr<u64> dev_addr, vm::ptr<u6
 		{
 			return CELL_ENOMEM;
 		}
+
+		sys_rsx.warning("sys_rsx_device_map(): Mapped address 0x%x", addr);
 
 		*dev_addr = addr;
 		render->device_addr = addr;

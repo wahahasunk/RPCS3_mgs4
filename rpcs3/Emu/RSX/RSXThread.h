@@ -26,10 +26,10 @@
 
 #include "Emu/Cell/lv2/sys_rsx.h"
 #include "Emu/IdManager.h"
-#include "Emu/system_config.h"
 
 #include "Core/RSXDisplay.h"
 #include "Core/RSXFrameBuffer.h"
+#include "Core/RSXContext.h"
 #include "Core/RSXIOMap.hpp"
 #include "Core/RSXVertexTypes.h"
 
@@ -139,7 +139,7 @@ namespace rsx
 		bool supports_normalized_barycentrics; // Basically all GPUs except NVIDIA have properly normalized barycentrics
 	};
 
-	struct sampled_image_descriptor_base;
+	class sampled_image_descriptor_base;
 
 	struct desync_fifo_cmd_info
 	{
@@ -148,7 +148,7 @@ namespace rsx
 	};
 
 	// TODO: This class is a mess, this needs to be broken into smaller chunks, like I did for RSXFIFO and RSXZCULL (kd)
-	class thread : public cpu_thread
+	class thread : public cpu_thread, public GCM_context
 	{
 		u64 timestamp_ctrl = 0;
 		u64 timestamp_subvalue = 0;
@@ -160,7 +160,6 @@ namespace rsx
 	protected:
 
 		std::array<push_buffer_vertex_info, 16> vertex_push_buffers;
-		rsx::simple_array<u32> element_push_buffer;
 
 		s32 m_skip_frame_ctr = 0;
 		bool skip_current_frame = false;
@@ -174,6 +173,7 @@ namespace rsx
 		std::unique_ptr<FIFO::FIFO_control> fifo_ctrl;
 		atomic_t<bool> rsx_thread_running{ false };
 		std::vector<std::pair<u32, u32>> dump_callstack_list() const override;
+		std::string dump_misc() const override;
 
 	protected:
 		FIFO::flattening_helper m_flattener;
@@ -205,21 +205,19 @@ namespace rsx
 		u32 m_pause_after_x_flips = 0;
 
 	public:
-		RsxDmaControl* ctrl = nullptr;
-		u32 dma_address{0};
-		rsx_iomap_table iomap_table;
-		u32 restore_point = 0;
 		atomic_t<u64> new_get_put = u64{umax};
+		u32 restore_point = 0;
 		u32 dbg_step_pc = 0;
 		u32 last_known_code_start = 0;
 		atomic_t<u32> external_interrupt_lock{ 0 };
 		atomic_t<bool> external_interrupt_ack{ false };
-		atomic_t<bool> is_initialized{ false };
+		atomic_t<u32> is_initialized{0};
+		rsx::simple_array<u32> element_push_buffer;
 		bool is_fifo_idle() const;
 		void flush_fifo();
 
 		// Returns [count of found commands, PC of their start]
-		std::pair<u32, u32> try_get_pc_of_x_cmds_backwards(u32 count, u32 get) const;
+		std::pair<u32, u32> try_get_pc_of_x_cmds_backwards(s32 count, u32 get) const;
 
 		void recover_fifo(u32 line = __builtin_LINE(),
 			u32 col = __builtin_COLUMN(),
@@ -229,7 +227,7 @@ namespace rsx
 		static void fifo_wake_delay(u64 div = 1);
 		u32 get_fifo_cmd() const;
 
-		void dump_regs(std::string&) const override;
+		void dump_regs(std::string&, std::any& custom_data) const override;
 		void cpu_wait(bs_t<cpu_flag> old) override;
 
 		static constexpr u32 id_base = 0x5555'5555; // See get_current_cpu_thread()
@@ -257,9 +255,6 @@ namespace rsx
 		atomic_bitmask_t<flip_request> async_flip_requested{};
 		u8 async_flip_buffer{ 0 };
 
-		GcmTileInfo tiles[limits::tiles_count];
-		GcmZcullInfo zculls[limits::zculls_count];
-
 		void capture_frame(const std::string &name);
 		const backend_configuration& get_backend_config() const { return backend_config; }
 
@@ -275,20 +270,6 @@ namespace rsx
 
 		atomic_t<bool> requested_vsync{true};
 		atomic_t<bool> enable_second_vhandler{false};
-
-		RsxDisplayInfo display_buffers[8];
-		u32 display_buffers_count{0};
-		u32 current_display_buffer{0};
-
-		shared_mutex sys_rsx_mtx;
-		u32 device_addr{0};
-		u32 label_addr{0};
-		u32 main_mem_size{0};
-		u32 local_mem_size{0};
-		u32 rsx_event_port{0};
-		u32 driver_info{0};
-
-		atomic_t<u64> unsent_gcm_events = 0; // Unsent event bits when aborting RSX/VBLANK thread (will be sent on savestate load)
 
 		bool send_event(u64, u64, u64);
 
@@ -521,7 +502,7 @@ namespace rsx
 
 		virtual std::pair<std::string, std::string> get_programs() const { return std::make_pair("", ""); }
 
-		virtual bool scaled_image_from_memory(blit_src_info& /*src_info*/, blit_dst_info& /*dst_info*/, bool /*interpolate*/) { return false; }
+		virtual bool scaled_image_from_memory(const blit_src_info& /*src_info*/, const blit_dst_info& /*dst_info*/, bool /*interpolate*/) { return false; }
 
 	public:
 		void reset();

@@ -339,6 +339,28 @@ namespace np
 		return;
 	}
 
+	extern void init_np_handler_dependencies()
+	{
+		if (auto handler = g_fxo->try_get<named_thread<np_handler>>())
+		{
+			handler->init_np_handler_dependencies();
+		}
+	}
+
+	void np_handler::init_np_handler_dependencies()
+	{
+		if (is_psn_active && g_cfg.net.psn_status == np_psn_status::psn_rpcn && g_fxo->is_init<network_context>() && !m_inited_np_handler_dependencies)
+		{
+			m_inited_np_handler_dependencies = true;
+
+			auto& nc = g_fxo->get<network_context>();
+			nc.bind_sce_np_port();
+
+			std::lock_guard lock(mutex_rpcn);
+			rpcn = rpcn::rpcn_client::get_instance();
+		}
+	}
+
 	np_handler::np_handler()
 	{
 		g_fxo->need<named_thread<signaling_handler>>();
@@ -389,15 +411,7 @@ namespace np
 				upnp.upnp_enable();
 		}
 
-		if (is_psn_active && g_cfg.net.psn_status == np_psn_status::psn_rpcn)
-		{
-			g_fxo->need<network_context>();
-			auto& nc = g_fxo->get<network_context>();
-			nc.bind_sce_np_port();
-
-			std::lock_guard lock(mutex_rpcn);
-			rpcn = rpcn::rpcn_client::get_instance();
-		}
+		init_np_handler_dependencies();
 	}
 
 	np_handler::np_handler(utils::serial& ar)
@@ -422,16 +436,16 @@ namespace np
 
 	np_handler::~np_handler()
 	{
-		std::unordered_map<u32, std::shared_ptr<score_transaction_ctx>> moved_trans;
+		std::unordered_map<u32, std::shared_ptr<generic_async_transaction_context>> moved_trans;
 		{
-			std::lock_guard lock(mutex_score_transactions);
-			moved_trans = std::move(score_transactions);
-			score_transactions.clear();
+			std::lock_guard lock(mutex_async_transactions);
+			moved_trans = std::move(async_transactions);
+			async_transactions.clear();
 		}
 
 		for (auto& [trans_id, trans] : moved_trans)
 		{
-			trans->abort_score_transaction();
+			trans->abort_transaction();
 		}
 
 		for (auto& [trans_id, trans] : moved_trans)
@@ -476,6 +490,15 @@ namespace np
 	bool np_handler::discover_ip_address()
 	{
 		auto sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+#ifdef _WIN32
+		if (sockfd == INVALID_SOCKET)
+#else
+		if (sockfd == -1)
+#endif
+		{
+			nph_log.error("Creating socket to discover local ip failed: %d", get_native_error());
+			return false;
+		}
 
 		auto close_socket = [&]()
 		{
@@ -499,7 +522,7 @@ namespace np
 			return false; // offline
 		}
 
-		sockaddr_in client_addr;
+		sockaddr_in client_addr{};
 		socklen_t client_addr_size = sizeof(client_addr);
 		if (getsockname(sockfd, reinterpret_cast<struct sockaddr*>(&client_addr), &client_addr_size) != 0)
 		{
@@ -509,7 +532,8 @@ namespace np
 		}
 
 		local_ip_addr = client_addr.sin_addr.s_addr;
-		nph_log.trace("discover_ip_address: IP was determined to be %s", ip_to_string(local_ip_addr));
+		if (nph_log.trace)
+			nph_log.trace("discover_ip_address: IP was determined to be %s", ip_to_string(local_ip_addr));
 		close_socket();
 		return true;
 	}
@@ -677,6 +701,7 @@ namespace np
 
 		if (g_cfg.net.psn_status >= np_psn_status::psn_fake)
 		{
+			g_cfg_rpcn.load(); // Ensures config is loaded even if rpcn is not running for simulated
 			std::string s_npid = g_cfg_rpcn.get_npid();
 			ensure(!s_npid.empty()); // It should have been generated before this
 
@@ -925,6 +950,19 @@ namespace np
 					case rpcn::CommandType::GetScoreRange: reply_get_score_range(req_id, data); break;
 					case rpcn::CommandType::GetScoreFriends: reply_get_score_friends(req_id, data); break;
 					case rpcn::CommandType::GetScoreNpid: reply_get_score_npid(req_id, data); break;
+					case rpcn::CommandType::TusSetMultiSlotVariable: reply_tus_set_multislot_variable(req_id, data); break;
+					case rpcn::CommandType::TusGetMultiSlotVariable: reply_tus_get_multislot_variable(req_id, data); break;
+					case rpcn::CommandType::TusGetMultiUserVariable: reply_tus_get_multiuser_variable(req_id, data); break;
+					case rpcn::CommandType::TusGetFriendsVariable: reply_tus_get_friends_variable(req_id, data); break;
+					case rpcn::CommandType::TusAddAndGetVariable: reply_tus_add_and_get_variable(req_id, data); break;
+					case rpcn::CommandType::TusTryAndSetVariable: reply_tus_try_and_set_variable(req_id, data); break;
+					case rpcn::CommandType::TusDeleteMultiSlotVariable: reply_tus_delete_multislot_variable(req_id, data); break;
+					case rpcn::CommandType::TusSetData: reply_tus_set_data(req_id, data); break;
+					case rpcn::CommandType::TusGetData: reply_tus_get_data(req_id, data); break;
+					case rpcn::CommandType::TusGetMultiSlotDataStatus: reply_tus_get_multislot_data_status(req_id, data); break;
+					case rpcn::CommandType::TusGetMultiUserDataStatus: reply_tus_get_multiuser_data_status(req_id, data); break;
+					case rpcn::CommandType::TusGetFriendsDataStatus: reply_tus_get_friends_data_status(req_id, data); break;
+					case rpcn::CommandType::TusDeleteMultiSlotData: reply_tus_delete_multislot_data(req_id, data); break;
 					default: rpcn_log.error("Unknown reply(%d) received!", command); break;
 					}
 				}
@@ -1070,7 +1108,7 @@ namespace np
 
 	u32 np_handler::add_players_to_history(vm::cptr<SceNpId> /*npids*/, u32 /*count*/)
 	{
-		const u32 req_id = get_req_id(0);
+		const u32 req_id = get_req_id(REQUEST_ID_HIGH::MISC);
 
 		if (basic_handler.handler_func)
 		{

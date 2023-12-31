@@ -3,6 +3,7 @@
 #include "../CPU/CPUThread.h"
 #include "../Memory/vm_ptr.h"
 #include "Utilities/lockless.h"
+#include "Utilities/BitField.h"
 
 #include "util/logs.hpp"
 #include "util/v128.hpp"
@@ -21,6 +22,7 @@ enum class ppu_cmd : u32
 	ptr_call, // Execute function by pointer
 	opd_call, // Execute function by provided rtoc and address (unlike lle_call, does not read memory)
 	cia_call, // Execute from current CIA, mo GPR modification applied
+	entry_call, // Load addr and rtoc from entry_func
 	initialize, // ppu_initialize()
 	sleep,
 	reset_stack, // resets stack address
@@ -123,6 +125,14 @@ struct cmd64
 	}
 };
 
+enum class ppu_debugger_mode : u32
+{
+	_default,
+	is_decimal,
+
+	max_mode,
+};
+
 class ppu_thread : public cpu_thread
 {
 public:
@@ -131,7 +141,7 @@ public:
 	static const u32 id_count = 100;
 	static constexpr std::pair<u32, u32> id_invl_range = {12, 12};
 
-	virtual void dump_regs(std::string&) const override;
+	virtual void dump_regs(std::string&, std::any& custom_data) const override;
 	virtual std::string dump_callstack() const override;
 	virtual std::vector<std::pair<u32, u32>> dump_callstack_list() const override;
 	virtual std::string dump_misc() const override;
@@ -252,8 +262,16 @@ public:
 	u64 rtime{0};
 	alignas(64) std::byte rdata[128]{}; // Reservation data
 	bool use_full_rdata{};
+	u32 res_notify{};
 
-	atomic_t<s32> prio{0}; // Thread priority (0..3071)
+	union ppu_prio_t
+	{
+		u64 all;
+		bf_t<s64, 0, 13> prio; // Thread priority (0..3071) (firs 12-bits)
+		bf_t<s64, 13, 51> order; // Thread enqueue order (last 52-bits)
+	};
+
+	atomic_t<ppu_prio_t> prio{};
 	const u32 stack_size; // Stack size
 	const u32 stack_addr; // Stack address
 
@@ -291,6 +309,7 @@ public:
 	u64 exec_bytes = 0; // Amount of "bytes" executed (4 for each instruction)
 
 	u32 dbg_step_pc = 0;
+	atomic_t<ppu_debugger_mode> debugger_mode{};
 
 	struct call_history_t
 	{
@@ -301,6 +320,23 @@ public:
 	} call_history;
 
 	static constexpr u32 call_history_max_size = 4096;
+
+	struct syscall_history_t
+	{
+		struct entry_t
+		{
+			u64 cia;
+			const char* func_name;
+			u64 error;
+			std::array<u64, 4> args;
+		};
+
+		std::vector<entry_t> data;
+		u64 index = 0;
+		u32 count_debug_arguments;
+	} syscall_history;
+
+	static constexpr u32 syscall_history_max_size = 2048;
 
 	struct hle_func_call_with_toc_info_t
 	{
@@ -331,7 +367,7 @@ public:
 
 	be_t<u64>* get_stack_arg(s32 i, u64 align = alignof(u64));
 	void exec_task();
-	void fast_call(u32 addr, u64 rtoc);
+	void fast_call(u32 addr, u64 rtoc, bool is_thread_entry = false);
 
 	static std::pair<vm::addr_t, u32> stack_push(u32 size, u32 align_v);
 	static void stack_pop_verbose(u32 addr, u32 size) noexcept;

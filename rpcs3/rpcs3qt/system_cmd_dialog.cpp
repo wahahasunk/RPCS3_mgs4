@@ -33,13 +33,13 @@ system_cmd_dialog::system_cmd_dialog(QWidget* parent)
 	m_value_input = new QLineEdit();
 	m_value_input->setFont(mono);
 	m_value_input->setMaxLength(18);
-	m_value_input->setValidator(new QRegularExpressionValidator(QRegularExpression("^(0[xX])?0*[a-fA-F0-9]{0,8}$")));
+	m_value_input->setValidator(new QRegularExpressionValidator(QRegularExpression("^(0[xX])?0*[a-fA-F0-9]{0,8}$"), this));
 	m_value_input->setPlaceholderText(QString("0x%1").arg(0, 16, 16, QChar('0')));
 
 	m_custom_command_input = new QLineEdit();
 	m_custom_command_input->setFont(mono);
 	m_custom_command_input->setMaxLength(18);
-	m_custom_command_input->setValidator(new QRegularExpressionValidator(QRegularExpression("^(0[xX])?0*[a-fA-F0-9]{0,8}$")));
+	m_custom_command_input->setValidator(new QRegularExpressionValidator(QRegularExpression("^(0[xX])?0*[a-fA-F0-9]{0,8}$"), this));
 	m_custom_command_input->setPlaceholderText(QString("0x%1").arg(0, 16, 16, QChar('0')));
 
 	m_command_box = new QComboBox();
@@ -114,7 +114,7 @@ void system_cmd_dialog::send_command()
 	const qulonglong status = m_command_box->currentData().toULongLong(&ok);
 	if (!ok)
 	{
-		gui_log.error("system_cmd_dialog::send_command: command can not be converted to qulonglong: %s", m_command_box->currentText().toStdString());
+		gui_log.error("system_cmd_dialog::send_command: command can not be converted to qulonglong: %s", m_command_box->currentText());
 		QMessageBox::warning(this, tr("Listen!"), tr("The selected command is bugged.\nPlease contact a developer."));
 		return;
 	}
@@ -122,7 +122,7 @@ void system_cmd_dialog::send_command()
 	const qulonglong param = hex_value(m_value_input->text(), ok);
 	if (!ok)
 	{
-		gui_log.error("system_cmd_dialog::send_command: value can not be converted to qulonglong: %s", m_value_input->text().toStdString());
+		gui_log.error("system_cmd_dialog::send_command: value can not be converted to qulonglong: %s", m_value_input->text());
 		QMessageBox::information(this, tr("Listen!"), tr("Please select a proper value first."));
 		return;
 	}
@@ -137,7 +137,7 @@ void system_cmd_dialog::send_custom_command()
 	const qulonglong status = hex_value(m_custom_command_input->text(), ok);
 	if (!ok)
 	{
-		gui_log.error("system_cmd_dialog::send_custom_command: command can not be converted to qulonglong: %s", m_custom_command_input->text().toStdString());
+		gui_log.error("system_cmd_dialog::send_custom_command: command can not be converted to qulonglong: %s", m_custom_command_input->text());
 		QMessageBox::information(this, tr("Listen!"), tr("Please select a proper custom command first."));
 		return;
 	}
@@ -145,7 +145,7 @@ void system_cmd_dialog::send_custom_command()
 	const qulonglong param = hex_value(m_value_input->text(), ok);
 	if (!ok)
 	{
-		gui_log.error("system_cmd_dialog::send_custom_command: value can not be converted to qulonglong: %s", m_value_input->text().toStdString());
+		gui_log.error("system_cmd_dialog::send_custom_command: value can not be converted to qulonglong: %s", m_value_input->text());
 		QMessageBox::information(this, tr("Listen!"), tr("Please select a proper value first."));
 		return;
 	}

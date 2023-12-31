@@ -21,7 +21,7 @@ inline void try_start(spu_thread& spu)
 	}).second)
 	{
 		spu.state -= cpu_flag::stop;
-		spu.state.notify_one(cpu_flag::stop);
+		spu.state.notify_one();
 	}
 };
 
@@ -273,7 +273,7 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 
 				for (status_npc_sync_var old; (old = status_npc).status & SPU_STATUS_RUNNING;)
 				{
-					status_npc.wait(old);
+					utils::bless<atomic_t<u32>>(&status_npc)[0].wait(old.status);
 				}
 			}
 		}
@@ -318,6 +318,50 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 	return false;
 }
 
+bool spu_thread::test_is_problem_state_register_offset(u32 offset, bool for_read, bool for_write) noexcept
+{
+	if (for_read)
+	{
+		switch (offset)
+		{
+		case MFC_CMDStatus_offs:
+		case MFC_QStatus_offs:
+		case SPU_Out_MBox_offs:
+		case SPU_MBox_Status_offs:
+		case SPU_Status_offs:
+		case Prxy_TagStatus_offs:
+		case SPU_NPC_offs:
+		case SPU_RunCntl_offs:
+			return true;
+		default: break;
+		}
+	}
+
+	if (for_write)
+	{
+		switch (offset)
+		{
+		case MFC_LSA_offs:
+		case MFC_EAH_offs:
+		case MFC_EAL_offs:
+		case MFC_Size_Tag_offs:
+		case MFC_Class_CMD_offs:
+		case Prxy_QueryType_offs:
+		case Prxy_QueryMask_offs:
+		case SPU_In_MBox_offs:
+		case SPU_RunCntl_offs:
+		case SPU_NPC_offs:
+		case SPU_RdSigNotify1_offs:
+		case SPU_RdSigNotify2_offs:
+		case (SPU_RdSigNotify2_offs & 0xffff): // Fow now accept both (this is used for an optimization so it can be imperfect)
+			return true;
+		default: break;
+		}
+	}
+
+	return false;
+}
+
 void spu_load_exec(const spu_exec_object& elf)
 {
 	spu_thread::g_raw_spu_ctr++;
@@ -338,6 +382,18 @@ void spu_load_exec(const spu_exec_object& elf)
 
 	spu->status_npc = {SPU_STATUS_RUNNING, elf.header.e_entry};
 	atomic_storage<u32>::release(spu->pc, elf.header.e_entry);
+
+	const auto funcs = spu->discover_functions(0, { spu->ls , SPU_LS_SIZE }, true, umax);
+
+	for (u32 addr : funcs)
+	{
+		spu_log.success("Found SPU function at: 0x%08x", addr);
+	}
+
+	if (!funcs.empty())
+	{
+		spu_log.success("Found %u SPU functions", funcs.size());
+	}
 }
 
 void spu_load_rel_exec(const spu_rel_object& elf)
@@ -348,7 +404,7 @@ void spu_load_rel_exec(const spu_rel_object& elf)
 	ensure(vm::get(vm::spu)->falloc(spu->vm_offset(), SPU_LS_SIZE, &spu->shm, vm::page_size_64k));
 	spu->map_ls(*spu->shm, spu->ls);
 
-	u64 total_memsize = 0;
+	u32 total_memsize = 0;
 
 	// Compute executable data size
 	for (const auto& shdr : elf.shdrs)
@@ -366,7 +422,7 @@ void spu_load_rel_exec(const spu_rel_object& elf)
 	{
 		if (shdr.sh_type == sec_type::sht_progbits && shdr.sh_flags().all_of(sh_flag::shf_alloc))
 		{
-			std::memcpy(spu->_ptr<void>(offs), shdr.bin.data(), shdr.sh_size);
+			std::memcpy(spu->_ptr<void>(offs), shdr.get_bin().data(), shdr.sh_size);
 			offs = utils::align<u32>(offs + shdr.sh_size, 4);
 		}
 	}

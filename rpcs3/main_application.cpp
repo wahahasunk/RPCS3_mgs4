@@ -36,6 +36,7 @@
 
 #include <QFileInfo> // This shouldn't be outside rpcs3qt...
 #include <QImageReader> // This shouldn't be outside rpcs3qt...
+#include <QStandardPaths> // This shouldn't be outside rpcs3qt...
 #include <thread>
 
 LOG_CHANNEL(sys_log, "SYS");
@@ -49,6 +50,7 @@ namespace audio
 namespace rsx::overlays
 {
 	extern void reset_performance_overlay();
+	extern void reset_debug_overlay();
 }
 
 /** Emu.Init() wrapper for user management */
@@ -78,10 +80,11 @@ void main_application::OnEmuSettingsChange()
 		}
 	}
 
-	rpcs3::utils::configure_logs();
-
 	if (!Emu.IsStopped())
 	{
+		// Change logging (only allowed during gameplay)
+		rpcs3::utils::configure_logs();
+
 		// Force audio provider
 		g_cfg.audio.provider.set(Emu.IsVsh() ? audio_provider::rsxaudio : audio_provider::cell_audio);
 	}
@@ -89,6 +92,7 @@ void main_application::OnEmuSettingsChange()
 	audio::configure_audio();
 	audio::configure_rsxaudio();
 	rsx::overlays::reset_performance_overlay();
+	rsx::overlays::reset_debug_overlay();
 }
 
 /** RPCS3 emulator has functions it desires to call from the GUI at times. Initialize them in here. */
@@ -249,7 +253,7 @@ EmuCallbacks main_application::CreateCallbacks()
 			}
 			else
 			{
-				sys_log.error("get_image_info failed to read '%s'. Error='%s'", filename, reader.errorString().toStdString());
+				sys_log.error("get_image_info failed to read '%s'. Error='%s'", filename, reader.errorString());
 			}
 		});
 		return success;
@@ -313,13 +317,13 @@ EmuCallbacks main_application::CreateCallbacks()
 					image = image.convertToFormat(QImage::Format::Format_RGBA8888);
 				}
 
-				std::memcpy(dst, image.constBits(), std::min(4 * target_width * target_height, image.height() * image.bytesPerLine()));
+				std::memcpy(dst, image.constBits(), std::min(target_width * target_height * 4LL, image.height() * image.bytesPerLine()));
 				success = true;
 				sys_log.notice("get_scaled_image scaled image: path='%s', width=%d, height=%d", path, width, height);
 			}
 			else
 			{
-				sys_log.error("get_scaled_image failed to read '%s'. Error='%s'", path, reader.errorString().toStdString());
+				sys_log.error("get_scaled_image failed to read '%s'. Error='%s'", path, reader.errorString());
 			}
 		});
 		return success;
@@ -329,6 +333,35 @@ EmuCallbacks main_application::CreateCallbacks()
 	{
 		// May result in an empty string if path does not exist
 		return QFileInfo(QString::fromUtf8(sv.data(), static_cast<int>(sv.size()))).canonicalFilePath().toStdString();
+	};
+
+	callbacks.get_font_dirs = []()
+	{
+		const QStringList locations = QStandardPaths::standardLocations(QStandardPaths::FontsLocation);
+		std::vector<std::string> font_dirs;
+		for (const QString& location : locations)
+		{
+			std::string font_dir = location.toStdString();
+			if (!font_dir.ends_with('/'))
+			{
+				font_dir += '/';
+			}
+			font_dirs.push_back(font_dir);
+		}
+		return font_dirs;
+	};
+
+	callbacks.on_install_pkgs = [](const std::vector<std::string>& pkgs)
+	{
+		for (const std::string& pkg : pkgs)
+		{
+			if (!rpcs3::utils::install_pkg(pkg))
+			{
+				sys_log.error("Failed to install %s", pkg);
+				return false;
+			}
+		}
+		return true;
 	};
 
 	return callbacks;

@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "Emu/System.h"
+#include "Emu/system_config.h"
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
@@ -42,7 +43,7 @@ struct trophy_context_t
 	trophy_context_t() = default;
 
 	trophy_context_t(utils::serial& ar)
-		: trp_name(ar.operator std::string())
+		: trp_name(ar.pop<std::string>())
 	{
 		std::string trophy_path = vfs::get(Emu.GetDir() + "TROPDIR/" + trp_name + "/TROPHY.TRP");
 		fs::file trp_stream(trophy_path);
@@ -54,7 +55,7 @@ struct trophy_context_t
 			trp_stream.open(trophy_path);
 		}
 
-		if (!ar.operator bool())
+		if (!ar.pop<bool>())
 		{
 			ar(read_only);
 			return;
@@ -241,6 +242,15 @@ void fmt_class_string<SceNpCommunicationSignature>::format(std::string& out, u64
 	const auto& sign = get_object(arg);
 
 	fmt::append(out, "%s", sign.data);
+}
+
+template <>
+void fmt_class_string<SceNpCommunicationId>::format(std::string& out, u64 arg)
+{
+	const auto& id = get_object(arg);
+
+	const u8 term = id.data[9];
+	fmt::append(out, "{ data='%s', term='%s' (0x%x), num=%d, dummy=%d }", id.data, std::isprint(term) ? fmt::format("%c", term) : "", term, id.num, id.dummy);
 }
 
 // Helpers
@@ -441,27 +451,48 @@ error_code sceNpTrophyCreateContext(vm::ptr<u32> context, vm::cptr<SceNpCommunic
 		return SCE_NP_TROPHY_ERROR_NOT_SUPPORTED;
 	}
 
+	sceNpTrophy.warning("sceNpTrophyCreateContext(): commId = %s", *commId);
+
 	// rough checks for further fmt::format call
-	if (commId->num > 99)
+	const s32 comm_num = commId->num;
+	if (comm_num > 99)
 	{
 		return SCE_NP_TROPHY_ERROR_INVALID_NP_COMM_ID;
 	}
 
 	// NOTE: commId->term is unused in our code (at least until someone finds out if we need to account for it)
 
-	// generate trophy context name, limited to 9 characters
-	std::string_view name_sv(commId->data, 9);
+	// Generate trophy context name, limited to 9 characters
+	// Read once for thread-safety reasons
+	std::string name_str(commId->data, 9);
 
 	// resize the name if it was shorter than expected
-	if (const auto pos = name_sv.find_first_of('\0'); pos != std::string_view::npos)
+	if (const auto pos = name_str.find_first_of('\0'); pos != std::string_view::npos)
 	{
-		name_sv = name_sv.substr(0, pos);
+		name_str = name_str.substr(0, pos);
 	}
 
-	sceNpTrophy.warning("sceNpTrophyCreateContext(): data='%s' term=0x%x (0x%x) num=%d", name_sv, commId->data[9], commId->data[9], commId->num);
+	const SceNpCommunicationSignature commSign_data = *commSign;
+
+	if (read_from_ptr<be_t<u32>>(commSign_data.data, 0) != NP_TROPHY_COMM_SIGN_MAGIC)
+	{
+		return SCE_NP_TROPHY_ERROR_INVALID_NP_COMM_ID;
+	}
+
+	if (std::basic_string_view<u8>(&commSign_data.data[6], 6).find_first_not_of('\0') != umax)
+	{
+		// 6 padding bytes - must be 0
+		return SCE_NP_TROPHY_ERROR_INVALID_NP_COMM_ID;
+	}
+
+	if (read_from_ptr<be_t<u16>>(commSign_data.data, 4) != 0x100)
+	{
+		// Signifies version (1.00), although only one constant is allowed
+		return SCE_NP_TROPHY_ERROR_INVALID_NP_COMM_ID;
+	}
 
 	// append the commId number as "_xx"
-	std::string name = fmt::format("%s_%02d", name_sv, commId->num);
+	std::string name = fmt::format("%s_%02d", name_str, comm_num);
 
 	// create trophy context
 	const auto ctxt = idm::make_ptr<trophy_context_t>();
@@ -545,12 +576,28 @@ error_code sceNpTrophyRegisterContext(ppu_thread& ppu, u32 context, u32 handle, 
 		}
 	};
 
-	// TODO: Callbacks
-	// From RE-ing a game's state machine, it seems the possible order is one of the following:
-	// * Install (Not installed)  - Setup - Progress * ? - Finalize - Complete - Installed
-	// * Reinstall (Corrupted)    - Setup - Progress * ? - Finalize - Complete - Installed
-	// * Update (Required update) - Setup - Progress * ? - Finalize - Complete - Installed
-	// * Installed
+	// open trophy pack file
+	std::string trp_path = vfs::get(Emu.GetDir() + "TROPDIR/" + ctxt->trp_name + "/TROPHY.TRP");
+	fs::file stream(trp_path);
+
+	if (!stream && Emu.GetCat() == "GD")
+	{
+		sceNpTrophy.warning("sceNpTrophyRegisterContext failed to open trophy file from boot path: '%s' (%s)", trp_path, fs::g_tls_error);
+		trp_path = vfs::get("/dev_bdvd/PS3_GAME/TROPDIR/" + ctxt->trp_name + "/TROPHY.TRP");
+		stream.open(trp_path);
+	}
+
+	// check if exists and opened
+	if (!stream)
+	{
+		const std::string msg = fmt::format("Failed to open trophy file: '%s' (%s)", trp_path, fs::g_tls_error);
+		return {SCE_NP_TROPHY_ERROR_CONF_DOES_NOT_EXIST, msg};
+	}
+
+	// TODO:
+	// SCE_NP_TROPHY_STATUS_DATA_CORRUPT     -> reinstall
+	// SCE_NP_TROPHY_STATUS_REQUIRES_UPDATE  -> reinstall (for example if a patch has updates for the trophy data)
+	// SCE_NP_TROPHY_STATUS_CHANGES_DETECTED -> reinstall (only possible in dev mode)
 
 	const std::string trophyPath = "/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + ctxt->trp_name;
 	const s32 trp_status = fs::is_dir(vfs::get(trophyPath)) ? SCE_NP_TROPHY_STATUS_INSTALLED : SCE_NP_TROPHY_STATUS_NOT_INSTALLED;
@@ -559,6 +606,7 @@ error_code sceNpTrophyRegisterContext(ppu_thread& ppu, u32 context, u32 handle, 
 
 	sceNpTrophy.notice("sceNpTrophyRegisterContext(): Callback is being called (trp_status=%u)", trp_status);
 
+	// "Ask permission" to install the trophy data.
 	// The callback is called once and then if it returns >= 0 the cb is called through events(coming from vsh) that are passed to the CB through cellSysutilCheckCallback
 	if (statusCb(ppu, context, trp_status, 0, 0, arg) < 0)
 	{
@@ -596,24 +644,6 @@ error_code sceNpTrophyRegisterContext(ppu_thread& ppu, u32 context, u32 handle, 
 	{
 		on_error();
 		return SCE_NP_TROPHY_ERROR_UNKNOWN_HANDLE;
-	}
-
-	// open trophy pack file
-	std::string trp_path = vfs::get(Emu.GetDir() + "TROPDIR/" + ctxt->trp_name + "/TROPHY.TRP");
-	fs::file stream(trp_path);
-
-	if (!stream && Emu.GetCat() == "GD")
-	{
-		sceNpTrophy.warning("sceNpTrophyRegisterContext failed to open trophy file from boot path: '%s' (%s)", trp_path, fs::g_tls_error);
-		trp_path = vfs::get("/dev_bdvd/PS3_GAME/TROPDIR/" + ctxt->trp_name + "/TROPHY.TRP");
-		stream.open(trp_path);
-	}
-
-	// check if exists and opened
-	if (!stream)
-	{
-		const std::string msg = fmt::format("Failed to open trophy file: '%s' (%s)", trp_path, fs::g_tls_error);
-		return {SCE_NP_TROPHY_ERROR_CONF_DOES_NOT_EXIST, msg};
 	}
 
 	TRPLoader trp(stream);
@@ -695,6 +725,7 @@ error_code sceNpTrophyRegisterContext(ppu_thread& ppu, u32 context, u32 handle, 
 		{
 			sysutil_register_cb([statusCb, status, context, completed, arg, wkptr](ppu_thread& cb_ppu) -> s32
 			{
+				// TODO: it is possible that we need to check the return value here as well.
 				statusCb(cb_ppu, context, status.first, completed, status.second, arg);
 
 				const auto queued = wkptr.lock();
@@ -872,21 +903,27 @@ error_code sceNpTrophyGetGameInfo(u32 context, u32 handle, vm::ptr<SceNpTrophyGa
 		return { SCE_NP_TROPHY_ERROR_CONF_DOES_NOT_EXIST, config_path };
 	}
 
+	if (details)
+		*details = {};
+	if (data)
+		*data = {};
+
 	trophy_xml_document doc{};
 	pugi::xml_parse_result res = doc.Read(config.to_string());
 	if (!res)
 	{
 		sceNpTrophy.error("sceNpTrophyGetGameInfo: Failed to read TROPCONF.SFM: %s", config_path);
 		// TODO: return some error
+		return CELL_OK;
 	}
 
-	auto trophy_base = doc.GetRoot();
-	ensure(trophy_base);
-
-	if (details)
-		*details = {};
-	if (data)
-		*data = {};
+	std::shared_ptr<rXmlNode> trophy_base = doc.GetRoot();
+	if (!trophy_base)
+	{
+		sceNpTrophy.error("sceNpTrophyGetGameInfo: Failed to read TROPCONF.SFM (root is null): %s", config_path);
+		// TODO: return some error
+		return CELL_OK;
+	}
 
 	for (std::shared_ptr<rXmlNode> n = trophy_base->GetChildren(); n; n = n->GetNext())
 	{
@@ -990,7 +1027,16 @@ error_code sceNpTrophyUnlockTrophy(u32 context, u32 handle, s32 trophyId, vm::pt
 		return SCE_NP_TROPHY_ERROR_ALREADY_UNLOCKED;
 	}
 
-	ctxt->tropusr->UnlockTrophy(trophyId, 0, 0); // TODO: add timestamps
+	vm::var<CellRtcTick> tick;
+	if (error_code error = cellRtcGetCurrentTick(tick))
+	{
+		sceNpTrophy.error("sceNpTrophyUnlockTrophy: Failed to get timestamp: 0x%x", +error);
+	}
+
+	if (ctxt->tropusr->UnlockTrophy(trophyId, tick->tick, tick->tick))
+	{
+		sceNpTrophy.notice("Trophy %d unlocked", trophyId);
+	}
 
 	// TODO: Make sure that unlocking platinum trophies is properly implemented and improve upon it
 	const std::string& config_path = vfs::get("/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + ctxt->trp_name + "/TROPCONF.SFM");
@@ -1000,7 +1046,7 @@ error_code sceNpTrophyUnlockTrophy(u32 context, u32 handle, s32 trophyId, vm::pt
 	{
 		sceNpTrophy.warning("sceNpTrophyUnlockTrophy: All requirements for unlocking the platinum trophy (ID = %d) were met.)", unlocked_platinum_id);
 
-		if (ctxt->tropusr->UnlockTrophy(unlocked_platinum_id, 0, 0)) // TODO: add timestamps
+		if (ctxt->tropusr->UnlockTrophy(unlocked_platinum_id, tick->tick, tick->tick))
 		{
 			sceNpTrophy.success("You unlocked a platinum trophy! Hooray!!!");
 		}
@@ -1013,7 +1059,10 @@ error_code sceNpTrophyUnlockTrophy(u32 context, u32 handle, s32 trophyId, vm::pt
 	}
 
 	const std::string trophyPath = "/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + ctxt->trp_name + "/TROPUSR.DAT";
-	ctxt->tropusr->Save(trophyPath);
+	if (!ctxt->tropusr->Save(trophyPath))
+	{
+		sceNpTrophy.error("sceNpTrophyUnlockTrophy: failed to save '%s'", trophyPath);
+	}
 
 	if (g_cfg.misc.show_trophy_popups)
 	{
@@ -1149,10 +1198,14 @@ static error_code NpTrophyGetTrophyInfo(const trophy_context_t* ctxt, s32 trophy
 	}
 
 	auto trophy_base = doc.GetRoot();
-	ensure(trophy_base);
+	if (!trophy_base)
+	{
+		sceNpTrophy.error("sceNpTrophyGetGameInfo: Failed to read TROPCONF.SFM (root is null): %s", config_path);
+		// TODO: return some error
+	}
 
 	bool found = false;
-	for (std::shared_ptr<rXmlNode> n = trophy_base->GetChildren(); n; n = n->GetNext())
+	for (std::shared_ptr<rXmlNode> n = trophy_base ? trophy_base->GetChildren() : nullptr; n; n = n->GetNext())
 	{
 		if (n->GetName() == "trophy" && (trophyId == atoi(n->GetAttribute("id").c_str())))
 		{
@@ -1394,14 +1447,18 @@ error_code sceNpTrophyGetTrophyIcon(u32 context, u32 handle, s32 trophyId, vm::p
 			pugi::xml_parse_result res = doc.Read(config.to_string());
 			if (!res)
 			{
-				sceNpTrophy.error("sceNpTrophyGetGameInfo: Failed to read TROPCONF.SFM: %s", config_path);
+				sceNpTrophy.error("sceNpTrophyGetTrophyIcon: Failed to read TROPCONF.SFM: %s", config_path);
 				// TODO: return some error
 			}
 
 			auto trophy_base = doc.GetRoot();
-			ensure(trophy_base);
+			if (!trophy_base)
+			{
+				sceNpTrophy.error("sceNpTrophyGetTrophyIcon: Failed to read TROPCONF.SFM (root is null): %s", config_path);
+				// TODO: return some error
+			}
 
-			for (std::shared_ptr<rXmlNode> n = trophy_base->GetChildren(); n; n = n->GetNext())
+			for (std::shared_ptr<rXmlNode> n = trophy_base ? trophy_base->GetChildren() : nullptr; n; n = n->GetNext())
 			{
 				if (n->GetName() == "trophy" && trophyId == atoi(n->GetAttribute("id").c_str()) && n->GetAttribute("hidden")[0] == 'y')
 				{

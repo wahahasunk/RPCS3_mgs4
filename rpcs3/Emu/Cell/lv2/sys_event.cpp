@@ -57,9 +57,9 @@ void lv2_event_queue::save_ptr(utils::serial& ar, lv2_event_queue* q)
 	ar(q->id);
 }
 
-std::shared_ptr<lv2_event_queue> lv2_event_queue::load_ptr(utils::serial& ar, std::shared_ptr<lv2_event_queue>& queue)
+std::shared_ptr<lv2_event_queue> lv2_event_queue::load_ptr(utils::serial& ar, std::shared_ptr<lv2_event_queue>& queue, std::string_view msg)
 {
-	const u32 id = ar.operator u32();
+	const u32 id = ar.pop<u32>();
 
 	if (!id)
 	{
@@ -72,10 +72,20 @@ std::shared_ptr<lv2_event_queue> lv2_event_queue::load_ptr(utils::serial& ar, st
 		return q;
 	}
 
-	Emu.DeferDeserialization([id, &queue]()
+	if (id >> 24 != id_base >> 24)
+	{
+		fmt::throw_exception("Failed in event queue pointer deserialization (invalid ID): location: %s, id=0x%x", msg, id);
+	}
+
+	Emu.DeferDeserialization([id, &queue, msg_str = std::string{msg}]()
 	{
 		// Defer resolving
-		queue = ensure(idm::get_unlocked<lv2_obj, lv2_event_queue>(id));
+		queue = idm::get_unlocked<lv2_obj, lv2_event_queue>(id);
+
+		if (!queue)
+		{
+			fmt::throw_exception("Failed in event queue pointer deserialization (not found): location: %s, id=0x%x", msg_str, id);
+		}
 	});
 
 	// Null until resolved
@@ -85,7 +95,7 @@ std::shared_ptr<lv2_event_queue> lv2_event_queue::load_ptr(utils::serial& ar, st
 lv2_event_port::lv2_event_port(utils::serial& ar)
 	: type(ar)
 	, name(ar)
-	, queue(lv2_event_queue::load_ptr(ar, queue))
+	, queue(lv2_event_queue::load_ptr(ar, queue, "eventport"))
 {
 }
 
@@ -710,7 +720,7 @@ error_code sys_event_port_send(u32 eport_id, u64 data1, u64 data2, u64 data3)
 	{
 		if (lv2_obj::check(port.queue))
 		{
-			const u64 source = port.name ? port.name : (s64{process_getpid()} << 32) | u64{eport_id};
+			const u64 source = port.name ? port.name : (u64{process_getpid() + 0u} << 32) | u64{eport_id};
 
 			return port.queue->send(source, data1, data2, data3);
 		}

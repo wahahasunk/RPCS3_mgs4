@@ -18,6 +18,11 @@
 
 #define OCCLUSION_MAX_POOL_SIZE   DESCRIPTOR_MAX_DRAW_CALLS
 
+namespace rsx
+{
+	struct GCM_tile_reference;
+}
+
 namespace vk
 {
 	// Forward declarations
@@ -35,6 +40,18 @@ namespace vk
 		uninterruptible = 1,
 		heap_dirty      = 2,
 		heap_changed    = 4,
+	};
+
+	struct image_readback_options_t
+	{
+		bool swap_bytes = false;
+		struct
+		{
+			u64 offset = 0;
+			u64 length = 0;
+
+			operator bool() const { return length != 0; }
+		} sync_region {};
 	};
 
 	const vk::render_device *get_current_renderer();
@@ -63,6 +80,7 @@ namespace vk
 		upload_contents_async   = 1,
 		initialize_image_layout = 2,
 		preserve_image_layout   = 4,
+		source_is_gpu_resident  = 8,
 
 		// meta-flags
 		upload_contents_inline    = 0,
@@ -73,9 +91,13 @@ namespace vk
 		const std::vector<rsx::subresource_layout>& subresource_layout, int format, bool is_swizzled, u16 layer_count,
 		VkImageAspectFlags flags, vk::data_heap &upload_heap, u32 heap_align, rsx::flags32_t image_setup_flags);
 
+	std::pair<buffer*, u32> detile_memory_block(
+		const vk::command_buffer& cmd, const rsx::GCM_tile_reference& tiled_region, const utils::address_range& range,
+		u16 width, u16 height, u8 bpp);
+
 	// Other texture management helpers
-	void copy_image_to_buffer(VkCommandBuffer cmd, const vk::image* src, const vk::buffer* dst, const VkBufferImageCopy& region, bool swap_bytes = false);
-	void copy_buffer_to_image(VkCommandBuffer cmd, const vk::buffer* src, const vk::image* dst, const VkBufferImageCopy& region);
+	void copy_image_to_buffer(const vk::command_buffer& cmd, const vk::image* src, const vk::buffer* dst, const VkBufferImageCopy& region, const image_readback_options_t& options = {});
+	void copy_buffer_to_image(const vk::command_buffer& cmd, const vk::buffer* src, const vk::image* dst, const VkBufferImageCopy& region);
 	u64  calculate_working_buffer_size(u64 base_size, VkImageAspectFlags aspect);
 
 	void copy_image_typeless(const command_buffer &cmd, image *src, image *dst, const areai& src_rect, const areai& dst_rect,

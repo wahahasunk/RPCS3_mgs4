@@ -4,6 +4,7 @@
 #include <QObject>
 
 #include "Emu/localized_string_id.h"
+#include "Emu/Io/pad_types.h"
 
 /**
  * Localized emucore string collection class
@@ -15,6 +16,8 @@ class localized_emu : public QObject
 
 public:
 	localized_emu() = default;
+
+	static QString translated_pad_button(pad_button btn);
 
 	template <typename... Args>
 	static std::string get_string(localized_string_id id, Args&&... args)
@@ -83,7 +86,7 @@ private:
 		case localized_string_id::CELL_MSG_DIALOG_ERROR_80010004: return tr("Memory allocation failed.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
 		case localized_string_id::CELL_MSG_DIALOG_ERROR_80010005: return tr("The resource with the specified identifier does not exist.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
 		case localized_string_id::CELL_MSG_DIALOG_ERROR_80010006: return tr("The file does not exist.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
-		case localized_string_id::CELL_MSG_DIALOG_ERROR_80010007: return tr("The file is in unrecognized format / The file is not a valid ELF file.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
+		case localized_string_id::CELL_MSG_DIALOG_ERROR_80010007: return tr("The file is in an unrecognized format / The file is not a valid ELF file.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
 		case localized_string_id::CELL_MSG_DIALOG_ERROR_80010008: return tr("Resource deadlock is avoided.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
 		case localized_string_id::CELL_MSG_DIALOG_ERROR_80010009: return tr("Operation not permitted.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
 		case localized_string_id::CELL_MSG_DIALOG_ERROR_8001000A: return tr("The device or resource is busy.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
@@ -132,7 +135,7 @@ private:
 		case localized_string_id::CELL_MSG_DIALOG_ERROR_80010036: return tr("Not empty.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
 		case localized_string_id::CELL_MSG_DIALOG_ERROR_80010037: return tr("Not supported.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
 		case localized_string_id::CELL_MSG_DIALOG_ERROR_80010038: return tr("File-system specific error.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
-		case localized_string_id::CELL_MSG_DIALOG_ERROR_80010039: return tr("Overflow occured.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
+		case localized_string_id::CELL_MSG_DIALOG_ERROR_80010039: return tr("Overflow occurred.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
 		case localized_string_id::CELL_MSG_DIALOG_ERROR_8001003A: return tr("Filesystem not mounted.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
 		case localized_string_id::CELL_MSG_DIALOG_ERROR_8001003B: return tr("Not SData.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
 		case localized_string_id::CELL_MSG_DIALOG_ERROR_8001003C: return tr("Incorrect version in sys_load_param.\n(%0)", "Error code").arg(std::forward<Args>(args)...);
@@ -173,6 +176,7 @@ private:
 		case localized_string_id::HOME_MENU_TITLE: return tr("Home Menu");
 		case localized_string_id::HOME_MENU_EXIT_GAME: return tr("Exit Game");
 		case localized_string_id::HOME_MENU_RESUME: return tr("Resume Game");
+		case localized_string_id::HOME_MENU_RESTART: return tr("Restart Game");
 		case localized_string_id::HOME_MENU_SETTINGS: return tr("Settings");
 		case localized_string_id::HOME_MENU_SETTINGS_SAVE: return tr("Save custom configuration?");
 		case localized_string_id::HOME_MENU_SETTINGS_SAVE_BUTTON: return tr("Save");
@@ -186,6 +190,9 @@ private:
 		case localized_string_id::HOME_MENU_SETTINGS_PERFORMANCE_OVERLAY: return tr("Performance Overlay");
 		case localized_string_id::HOME_MENU_SETTINGS_DEBUG: return tr("Debug");
 		case localized_string_id::HOME_MENU_SCREENSHOT: return tr("Take Screenshot");
+		case localized_string_id::HOME_MENU_SAVESTATE: return tr("Save Emulation State");
+		case localized_string_id::HOME_MENU_SAVESTATE_AND_EXIT: return tr("Save Emulation State And Exit");
+		case localized_string_id::HOME_MENU_RELOAD_SAVESTATE: return tr("Reload Last Emulation State");
 		case localized_string_id::HOME_MENU_RECORDING: return tr("Start/Stop Recording");
 		case localized_string_id::EMULATION_PAUSED_RESUME_WITH_START: return tr("Press and hold the START button to resume");
 		case localized_string_id::EMULATION_RESUMING: return tr("Resuming...!");

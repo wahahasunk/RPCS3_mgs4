@@ -6,6 +6,12 @@
 #include "lv2_socket_native.h"
 #include "sys_net_helpers.h"
 
+#ifdef _WIN32
+constexpr SOCKET invalid_socket = INVALID_SOCKET;
+#else
+constexpr int invalid_socket = -1;
+#endif
+
 LOG_CHANNEL(sys_net);
 
 lv2_socket_native::lv2_socket_native(lv2_socket_family family, lv2_socket_type type, lv2_ip_protocol protocol)
@@ -50,13 +56,6 @@ lv2_socket_native::~lv2_socket_native()
 		::close(socket);
 #endif
 	}
-
-	if (bound_port)
-	{
-		auto& nph = g_fxo->get<named_thread<np::np_handler>>();
-		nph.upnp_remove_port_mapping(bound_port, type == SYS_NET_SOCK_STREAM ? "TCP" : "UDP");
-		bound_port = 0;
-	}
 }
 
 s32 lv2_socket_native::create_socket()
@@ -75,7 +74,7 @@ s32 lv2_socket_native::create_socket()
 
 	auto socket_res = ::socket(native_domain, native_type, native_proto);
 
-	if (socket_res == -1)
+	if (socket_res == invalid_socket)
 	{
 		return -get_last_error(false);
 	}
@@ -109,7 +108,7 @@ std::tuple<bool, s32, std::shared_ptr<lv2_socket>, sys_net_sockaddr> lv2_socket_
 
 	socket_type native_socket = ::accept(socket, reinterpret_cast<struct sockaddr*>(&native_addr), &native_addrlen);
 
-	if (native_socket != -1)
+	if (native_socket != invalid_socket)
 	{
 		auto newsock = std::make_shared<lv2_socket_native>(family, type, protocol);
 		newsock->set_socket(native_socket, family, type, protocol);
@@ -211,12 +210,22 @@ std::optional<s32> lv2_socket_native::connect(const sys_net_sockaddr& addr)
 		dnshook.add_dns_spy(lv2_id);
 	}
 
+#ifdef _WIN32
+	bool was_connecting = connecting;
+#endif
+
 	if (::connect(socket, reinterpret_cast<struct sockaddr*>(&native_addr), native_addr_len) == 0)
 	{
 		return CELL_OK;
 	}
 
 	sys_net_error result = get_last_error(!so_nbio);
+
+#ifdef _WIN32
+	// See https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-connect
+	if (was_connecting && (result == SYS_NET_EINVAL || result == SYS_NET_EWOULDBLOCK))
+		return -SYS_NET_EALREADY;
+#endif
 
 	if (result)
 	{
@@ -959,7 +968,7 @@ std::optional<s32> lv2_socket_native::sendto(s32 flags, const std::vector<u8>& b
 
 	if (dnshook.is_dns(lv2_id))
 	{
-		const s32 ret_analyzer = dnshook.analyze_dns_packet(lv2_id, reinterpret_cast<const u8*>(buf.data()), buf.size());
+		const s32 ret_analyzer = dnshook.analyze_dns_packet(lv2_id, reinterpret_cast<const u8*>(buf.data()), ::size32(buf));
 
 		// Check if the packet is intercepted
 		if (ret_analyzer >= 0)
@@ -968,7 +977,7 @@ std::optional<s32> lv2_socket_native::sendto(s32 flags, const std::vector<u8>& b
 		}
 	}
 
-	native_result = ::sendto(socket, reinterpret_cast<const char*>(buf.data()), buf.size(), native_flags, native_addr ? reinterpret_cast<struct sockaddr*>(&(*native_addr)) : nullptr, native_addr ? sizeof(*native_addr) : 0);
+	native_result = ::sendto(socket, reinterpret_cast<const char*>(buf.data()), ::narrow<int>(buf.size()), native_flags, native_addr ? reinterpret_cast<struct sockaddr*>(&native_addr.value()) : nullptr, native_addr ? sizeof(sockaddr_in) : 0);
 
 	if (native_result >= 0)
 	{
@@ -1016,7 +1025,7 @@ std::optional<s32> lv2_socket_native::sendmsg(s32 flags, const sys_net_msghdr& m
 		const u32 len = msg.msg_iov[i].iov_len;
 		const std::vector<u8> buf_copy(vm::_ptr<const char>(iov_base.addr()), vm::_ptr<const char>(iov_base.addr()) + len);
 
-		native_result = ::send(socket, reinterpret_cast<const char*>(buf_copy.data()), buf_copy.size(), native_flags);
+		native_result = ::send(socket, reinterpret_cast<const char*>(buf_copy.data()), ::narrow<int>(buf_copy.size()), native_flags);
 
 		if (native_result >= 0)
 		{

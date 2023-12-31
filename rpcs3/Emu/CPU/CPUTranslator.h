@@ -13,13 +13,17 @@
 #pragma GCC diagnostic ignored "-Wstrict-aliasing"
 #pragma GCC diagnostic ignored "-Weffc++"
 #pragma GCC diagnostic ignored "-Wmissing-noreturn"
+#pragma GCC diagnostic ignored "-Wredundant-decls"
 #endif
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Support/KnownBits.h"
+#include "llvm/Support/ModRef.h"
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/IntrinsicsX86.h"
 #include "llvm/IR/IntrinsicsAArch64.h"
 
@@ -58,6 +62,62 @@ concept DSLValue = requires (T& v)
 {
 	{ v.eval(std::declval<llvm::IRBuilder<>*>()) } -> LLVMValue;
 };
+
+template <usz N>
+struct get_int_bits
+{
+};
+
+template <>
+struct get_int_bits<1>
+{
+	using utype = bool;
+};
+
+template <>
+struct get_int_bits<2>
+{
+	using utype = i2;
+};
+
+template <>
+struct get_int_bits<4>
+{
+	using utype = i4;
+};
+
+template <>
+struct get_int_bits<8>
+{
+	using utype = u8;
+};
+
+template <>
+struct get_int_bits<16>
+{
+	using utype = u16;
+};
+
+template <>
+struct get_int_bits<32>
+{
+	using utype = u32;
+};
+
+template <>
+struct get_int_bits<64>
+{
+	using utype = u64;
+};
+
+template <>
+struct get_int_bits<128>
+{
+	using utype = u128;
+};
+
+template <usz Bits>
+using get_int_vt = typename get_int_bits<Bits>::utype;
 
 template <typename T = void>
 struct llvm_value_t
@@ -862,6 +922,14 @@ inline llvm_div<T1, T2> operator /(T1&& a1, T2&& a2)
 	return {a1, a2};
 }
 
+inline llvm::Constant* getZeroValueForNegation(llvm::Type* Ty)
+{
+	if (Ty->isFPOrFPVectorTy())
+		return llvm::ConstantFP::getNegativeZero(Ty);
+
+	return llvm::Constant::getNullValue(Ty);
+}
+
 template <typename A1, typename T = llvm_common_t<A1>>
 struct llvm_neg
 {
@@ -911,7 +979,7 @@ struct llvm_neg
 		{
 			v1 = i->getOperand(1);
 
-			if (i->getOperand(0) == llvm::ConstantFP::getZeroValueForNegation(v1->getType()))
+			if (i->getOperand(0) == getZeroValueForNegation(v1->getType()))
 			{
 				if (auto r1 = a1.match(v1, _m); v1)
 				{
@@ -2911,6 +2979,9 @@ protected:
 	// Allow VNNI
 	bool m_use_vnni = false;
 
+	// Allow GFNI
+	bool m_use_gfni = false;
+
 	// Allow Icelake tier AVX-512
 	bool m_use_avx512_icl = false;
 
@@ -2992,7 +3063,7 @@ public:
 	}
 
 	template <typename RT, DSLValue... Args>
-	auto call(llvm::Function* func, Args&&... args)
+	auto callf(llvm::Function* func, Args&&... args)
 	{
 		llvm_value_t<RT> r;
 		r.value = m_ir->CreateCall(func, {std::forward<Args>(args).eval(m_ir)...});
@@ -3292,7 +3363,7 @@ public:
 
 	// Infinite-precision shift left
 	template <typename T, typename U, typename CT = llvm_common_t<T, U>>
-	static auto inf_shl(T&& a, U&& b)
+	auto inf_shl(T&& a, U&& b)
 	{
 		static constexpr u32 esz = llvm_value_t<CT>::esize;
 
@@ -3318,7 +3389,7 @@ public:
 
 	// Infinite-precision logical shift right (unsigned)
 	template <typename T, typename U, typename CT = llvm_common_t<T, U>>
-	static auto inf_lshr(T&& a, U&& b)
+	auto inf_lshr(T&& a, U&& b)
 	{
 		static constexpr u32 esz = llvm_value_t<CT>::esize;
 
@@ -3344,7 +3415,7 @@ public:
 
 	// Infinite-precision arithmetic shift right (signed)
 	template <typename T, typename U, typename CT = llvm_common_t<T, U>>
-	static auto inf_ashr(T&& a, U&& b)
+	auto inf_ashr(T&& a, U&& b)
 	{
 		static constexpr u32 esz = llvm_value_t<CT>::esize;
 
@@ -3567,6 +3638,18 @@ public:
 	template <typename T = v128>
 	llvm::Constant* make_const_vector(T, llvm::Type*, u32 = __builtin_LINE());
 
+	template <typename T>
+	llvm::KnownBits get_known_bits(T a)
+	{
+		return llvm::computeKnownBits(a.eval(m_ir), m_module->getDataLayout());
+	}
+
+	template <typename T>
+	llvm::KnownBits kbc(T value)
+	{
+		return llvm::KnownBits::makeConstant(llvm::APInt(sizeof(T) * 8, u64(value)));
+	}
+
 private:
 	// Custom intrinsic table
 	std::unordered_map<std::string_view, std::function<llvm::Value*(llvm::CallInst*)>> m_intrinsics;
@@ -3645,6 +3728,13 @@ public:
 
 			return nullptr;
 		});
+	}
+
+	// (m << 3) >= 0 ? a : b
+	template <typename T, typename U, typename V>
+	static auto select_by_bit4(T&& m, U&& a, V&& b)
+	{
+		return llvm_calli<u8[16], T, U, V>{"any_select_by_bit4", {std::forward<T>(m), std::forward<U>(a), std::forward<V>(b)}};
 	}
 
 	template <typename T, typename = std::enable_if_t<std::is_same_v<llvm_common_t<T>, f32[4]>>>

@@ -85,6 +85,9 @@
     <Filter Include="Emu\GPU\RSX\Overlays\HomeMenu\Pages">
       <UniqueIdentifier>{017e5a5d-b190-4032-baed-57f8020861a5}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Emu\GPU\RSX\Program\Snippets\RSXProg">
+      <UniqueIdentifier>{f990b0be-adbd-4a1c-b8c7-d6f963d5b629}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Crypto\aes.cpp">
@@ -834,6 +837,9 @@
     <ClCompile Include="Emu\Cell\lv2\sys_config.cpp">
       <Filter>Emu\Cell\lv2</Filter>
     </ClCompile>
+    <ClCompile Include="Emu\Io\Infinity.cpp">
+      <Filter>Emu\Io</Filter>
+    </ClCompile>
     <ClCompile Include="Emu\Io\Skylander.cpp">
       <Filter>Emu\Io</Filter>
     </ClCompile>
@@ -1093,6 +1099,9 @@
     <ClCompile Include="Emu\RSX\Overlays\overlay_cursor.cpp">
       <Filter>Emu\GPU\RSX\Overlays</Filter>
     </ClCompile>
+    <ClCompile Include="util\serialization_ext.cpp">
+      <Filter>Emu</Filter>
+    </ClCompile>
     <ClCompile Include="Emu\savestate_utils.cpp">
       <Filter>Emu</Filter>
     </ClCompile>
@@ -1145,6 +1154,30 @@
       <Filter>Emu\NP</Filter>
     </ClCompile>
     <ClCompile Include="Emu\RSX\Overlays\overlay_manager.cpp">
+      <Filter>Emu\GPU\RSX\Overlays</Filter>
+    </ClCompile>
+    <ClCompile Include="Emu\games_config.cpp">
+      <Filter>Emu</Filter>
+    </ClCompile>
+    <ClCompile Include="Emu\Io\RB3MidiGuitar.cpp">
+      <Filter>Emu\Io</Filter>
+    </ClCompile>
+    <ClCompile Include="Emu\Io\RB3MidiKeyboard.cpp">
+      <Filter>Emu\Io</Filter>
+    </ClCompile>
+    <ClCompile Include="Emu\Io\midi_config_types.cpp">
+      <Filter>Emu\Io</Filter>
+    </ClCompile>
+    <ClCompile Include="Emu\Io\pad_types.cpp">
+      <Filter>Emu\Io</Filter>
+    </ClCompile>
+    <ClCompile Include="Emu\RSX\Core\RSXContext.cpp">
+      <Filter>Emu\GPU\RSX\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Crypto\unzip.cpp">
+      <Filter>Crypto</Filter>
+    </ClCompile>
+    <ClCompile Include="Emu\RSX\Overlays\overlay_debug_overlay.cpp">
       <Filter>Emu\GPU\RSX\Overlays</Filter>
     </ClCompile>
   </ItemGroup>
@@ -1743,9 +1776,6 @@
     <ClInclude Include="Emu\RSX\gcm_printing.h">
       <Filter>Emu\GPU\RSX</Filter>
     </ClInclude>
-    <ClInclude Include="Emu\RSX\Common\TextGlyphs.h">
-      <Filter>Emu\GPU\RSX\Common</Filter>
-    </ClInclude>
     <ClInclude Include="..\Utilities\mutex.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -1879,6 +1909,9 @@
       <Filter>Emu\GPU\RSX</Filter>
     </ClInclude>
     <ClInclude Include="Emu\Io\Keyboard.h">
+      <Filter>Emu\Io</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Io\Infinity.h">
       <Filter>Emu\Io</Filter>
     </ClInclude>
     <ClInclude Include="Emu\Io\Skylander.h">
@@ -2079,6 +2112,9 @@
     <ClInclude Include="Emu\system_progress.hpp">
       <Filter>Emu</Filter>
     </ClInclude>
+    <ClInclude Include="Emu\savestate_utils.hpp">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="rpcs3_version.h">
       <Filter>Emu</Filter>
     </ClInclude>
@@ -2245,7 +2281,7 @@
     <ClInclude Include="util\video_provider.h">
       <Filter>Utilities</Filter>
     </ClInclude>
-    <ClInclude Include="util\image_sink.h">
+    <ClInclude Include="util\video_sink.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="Emu\Io\recording_config.h">
@@ -2308,8 +2344,62 @@
     <ClInclude Include="Emu\NP\upnp_config.h">
       <Filter>Emu\NP</Filter>
     </ClInclude>
-    <ClInclude Include="io_buffer.h">
+    <ClInclude Include="Emu\RSX\Common\io_buffer.h">
       <Filter>Emu\GPU\RSX\Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\RSX\Common\tiled_dma_copy.hpp">
+      <Filter>Emu\GPU\RSX\Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\games_config.h">
+      <Filter>Emu</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\config_mode.h">
+      <Filter>Emu</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Io\RB3MidiGuitar.h">
+      <Filter>Emu\Io</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Io\RB3MidiKeyboard.h">
+      <Filter>Emu\Io</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Io\midi_config_types.h">
+      <Filter>Emu\Io</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Io\buzz_config.h">
+      <Filter>Emu\Io</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Io\turntable_config.h">
+      <Filter>Emu\Io</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Io\ghltar_config.h">
+      <Filter>Emu\Io</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Io\usio_config.h">
+      <Filter>Emu\Io</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Io\gem_config.h">
+      <Filter>Emu\Io</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\Io\emulated_pad_config.h">
+      <Filter>Emu\Io</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\RSX\Common\unordered_map.hpp">
+      <Filter>Emu\GPU\RSX\Common</Filter>
+    </ClInclude>
+    <ClInclude Include="util\bless.hpp">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\RSX\Core\RSXContext.h">
+      <Filter>Emu\GPU\RSX\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="Crypto\unzip.h">
+      <Filter>Crypto</Filter>
+    </ClInclude>
+    <ClInclude Include="util\serialization_ext.hpp">
+      <Filter>Emu</Filter>
+    </ClInclude>
+    <ClInclude Include="Emu\RSX\Overlays\overlay_debug_overlay.h">
+      <Filter>Emu\GPU\RSX\Overlays</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -2344,6 +2434,36 @@
       <Filter>Emu\GPU\RSX\Program\Snippets</Filter>
     </None>
     <None Include="Emu\RSX\Program\GLSLSnippets\OverlayRenderFS.glsl">
+      <Filter>Emu\GPU\RSX\Program\Snippets</Filter>
+    </None>
+    <None Include="Emu\RSX\Program\GLSLSnippets\RSXProg\RSXFragmentPrologue.glsl">
+      <Filter>Emu\GPU\RSX\Program\Snippets\RSXProg</Filter>
+    </None>
+    <None Include="Emu\RSX\Program\GLSLSnippets\RSXProg\RSXFragmentTextureDepthConversion.glsl">
+      <Filter>Emu\GPU\RSX\Program\Snippets\RSXProg</Filter>
+    </None>
+    <None Include="Emu\RSX\Program\GLSLSnippets\RSXProg\RSXFragmentTextureOps.glsl">
+      <Filter>Emu\GPU\RSX\Program\Snippets\RSXProg</Filter>
+    </None>
+    <None Include="Emu\RSX\Program\GLSLSnippets\RSXProg\RSXProgramCommon.glsl">
+      <Filter>Emu\GPU\RSX\Program\Snippets\RSXProg</Filter>
+    </None>
+    <None Include="Emu\RSX\Program\GLSLSnippets\RSXProg\RSXVertexPrologue.glsl">
+      <Filter>Emu\GPU\RSX\Program\Snippets\RSXProg</Filter>
+    </None>
+    <None Include="Emu\RSX\Program\GLSLSnippets\RSXProg\RSXFragmentTextureMSAAOps.glsl">
+      <Filter>Emu\GPU\RSX\Program\Snippets\RSXProg</Filter>
+    </None>
+    <None Include="Emu\RSX\Program\GLSLSnippets\RSXProg\RSXFragmentTextureMSAAOpsInternal.glsl">
+      <Filter>Emu\GPU\RSX\Program\Snippets\RSXProg</Filter>
+    </None>
+    <None Include="Emu\RSX\Program\GLSLSnippets\RSXProg\RSXDefines2.glsl">
+      <Filter>Emu\GPU\RSX\Program\Snippets\RSXProg</Filter>
+    </None>
+    <None Include="Emu\RSX\Program\GLSLSnippets\RSXProg\RSXVertexFetch.glsl">
+      <Filter>Emu\GPU\RSX\Program\Snippets\RSXProg</Filter>
+    </None>
+    <None Include="Emu\RSX\Program\GLSLSnippets\RSXMemoryTiling.glsl">
       <Filter>Emu\GPU\RSX\Program\Snippets</Filter>
     </None>
   </ItemGroup>

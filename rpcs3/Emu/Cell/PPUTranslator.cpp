@@ -5,6 +5,7 @@
 #include "Emu/Cell/Common.h"
 #include "PPUTranslator.h"
 #include "PPUThread.h"
+#include "SPUThread.h"
 
 #include "util/types.hpp"
 #include "util/endian.hpp"
@@ -12,6 +13,8 @@
 #include "util/v128.hpp"
 #include "util/simd.hpp"
 #include <algorithm>
+#include <unordered_set>
+#include <span>
 
 using namespace llvm;
 
@@ -129,6 +132,7 @@ Type* PPUTranslator::GetContextType()
 }
 
 u32 ppu_get_far_jump(u32 pc);
+bool ppu_test_address_may_be_mmio(std::span<const be_t<u32>> insts);
 
 Function* PPUTranslator::Translate(const ppu_function& info)
 {
@@ -148,9 +152,9 @@ Function* PPUTranslator::Translate(const ppu_function& info)
 	// Don't emit check in small blocks without terminator
 	bool need_check = info.size >= 16;
 
-	for (u32 addr = m_addr; addr < m_addr + info.size; addr += 4)
+	for (u64 addr = m_addr; addr < m_addr + info.size; addr += 4)
 	{
-		const u32 op = vm::read32(vm::cast(addr + base));
+		const u32 op = *ensure(m_info.get_ptr<u32>(::narrow<u32>(addr + base)));
 
 		switch (g_ppu_itype.decode(op))
 		{
@@ -198,9 +202,13 @@ Function* PPUTranslator::Translate(const ppu_function& info)
 		const auto vcheck = BasicBlock::Create(m_context, "__test", m_function);
 		m_ir->CreateCondBr(m_ir->CreateIsNull(vstate), body, vcheck, m_md_likely);
 
-		// Create tail call to the check function
 		m_ir->SetInsertPoint(vcheck);
-		Call(GetType<void>(), "__check", m_thread, GetAddr());
+
+		// Raise wait flag as soon as possible
+		m_ir->CreateAtomicRMW(llvm::AtomicRMWInst::Or, ptr, m_ir->getInt32((+cpu_flag::wait).operator u32()), llvm::MaybeAlign{4}, llvm::AtomicOrdering::AcquireRelease);
+
+		// Create tail call to the check function
+		Call(GetType<void>(), "__check", m_thread, GetAddr())->setTailCall();
 		m_ir->CreateRetVoid();
 	}
 	else
@@ -214,7 +222,7 @@ Function* PPUTranslator::Translate(const ppu_function& info)
 	const auto block = std::make_pair(info.addr, info.size);
 	{
 		// Optimize BLR (prefetch LR)
-		if (vm::read32(vm::cast(block.first + block.second - 4)) == ppu_instructions::BLR())
+		if (*ensure(m_info.get_ptr<u32>(block.first + block.second - 4)) == ppu_instructions::BLR())
 		{
 			RegLoad(m_lr);
 		}
@@ -239,7 +247,10 @@ Function* PPUTranslator::Translate(const ppu_function& info)
 				m_rel = nullptr;
 			}
 
-			const u32 op = vm::read32(vm::cast(m_addr + base));
+			// Reset MMIO hint
+			m_may_be_mmio = true;
+
+			const u32 op = *ensure(m_info.get_ptr<u32>(::narrow<u32>(m_addr + base)));
 
 			(this->*(s_ppu_decoder.decode(op)))({op});
 
@@ -357,12 +368,54 @@ void PPUTranslator::CallFunction(u64 target, Value* indirect)
 		const u64 base = m_reloc ? m_reloc->addr : 0;
 		const u32 caddr = m_info.segs[0].addr;
 		const u32 cend = caddr + m_info.segs[0].size - 1;
-		const u64 _target = target + base;
+		const u32 _target = ::narrow<u32>(target + base);
 
 		if (_target >= caddr && _target <= cend)
 		{
-			callee = m_module->getOrInsertFunction(fmt::format("__0x%x", target), type);
-			cast<Function>(callee.getCallee())->setCallingConv(CallingConv::GHC);
+			std::unordered_set<u32> passed_targets{_target};
+
+			u32 target_last = _target;
+
+			// Try to follow unconditional branches as long as there is no infinite loop
+			while (target_last != _target)
+			{
+				const ppu_opcode_t op{*ensure(m_info.get_ptr<u32>(target_last))};
+				const ppu_itype::type itype = g_ppu_itype.decode(op.opcode);
+
+				if (((itype == ppu_itype::BC && (op.bo & 0x14) == 0x14) || itype == ppu_itype::B) && !op.lk)
+				{
+					const u32 new_target = (op.aa ? 0 : target_last) + (itype == ppu_itype::B ? +op.bt24 : +op.bt14);
+
+					if (target_last >= caddr && target_last <= cend)
+					{
+						if (passed_targets.emplace(new_target).second)
+						{
+							// Ok
+							target_last = new_target;
+							continue;
+						}
+
+						// Infinite loop detected
+						target_last = _target;
+					}
+
+					// Odd destination
+				}
+				else if (itype == ppu_itype::BCLR && (op.bo & 0x14) == 0x14 && !op.lk)
+				{
+					// Special case: empty function
+					// In this case the branch can be treated as BCLR because previous CIA does not matter
+					indirect = RegLoad(m_lr);
+				}
+
+				break;
+			}
+
+			if (!indirect)
+			{
+				callee = m_module->getOrInsertFunction(fmt::format("__0x%x", target_last - base), type);
+				cast<Function>(callee.getCallee())->setCallingConv(CallingConv::GHC);
+			}
 		}
 		else
 		{
@@ -372,7 +425,7 @@ void PPUTranslator::CallFunction(u64 target, Value* indirect)
 
 	if (indirect)
 	{
-		m_ir->CreateStore(Trunc(indirect, GetType<u32>()), m_ir->CreateStructGEP(m_thread_type, m_thread, static_cast<uint>(&m_cia - m_locals)), true);
+		m_ir->CreateStore(Trunc(indirect, GetType<u32>()), m_ir->CreateStructGEP(m_thread_type, m_thread, static_cast<uint>(&m_cia - m_locals)));
 
 		// Try to optimize
 		if (auto inst = dyn_cast_or_null<Instruction>(indirect))
@@ -385,7 +438,7 @@ void PPUTranslator::CallFunction(u64 target, Value* indirect)
 
 		const auto pos = m_ir->CreateShl(indirect, 1);
 		const auto ptr = dyn_cast<GetElementPtrInst>(m_ir->CreateGEP(get_type<u8>(), m_exec, pos));
-		const auto val = m_ir->CreateLoad(get_type<u64>(), m_ir->CreateBitCast(ptr, get_type<u64*>()));
+		const auto val = m_ir->CreateLoad(get_type<u64>(), ptr);
 		callee = FunctionCallee(type, m_ir->CreateIntToPtr(m_ir->CreateAnd(val, 0xffff'ffff'ffff), type->getPointerTo()));
 
 		// Load new segment address
@@ -456,7 +509,7 @@ void PPUTranslator::FlushRegisters()
 				m_ir->SetInsertPoint(block);
 			}
 
-			m_ir->CreateStore(local, bitcast(m_globals[index], local->getType()->getPointerTo()));
+			m_ir->CreateStore(local, m_globals[index]);
 			m_globals[index] = nullptr;
 		}
 	}
@@ -591,25 +644,66 @@ void PPUTranslator::UseCondition(MDNode* hint, Value* cond)
 	}
 }
 
-llvm::Value* PPUTranslator::GetMemory(llvm::Value* addr, llvm::Type* type)
+llvm::Value* PPUTranslator::GetMemory(llvm::Value* addr)
 {
-	return bitcast(m_ir->CreateGEP(get_type<u8>(), m_base, addr), type->getPointerTo());
+	return m_ir->CreateGEP(get_type<u8>(), m_base, addr);
 }
 
 Value* PPUTranslator::ReadMemory(Value* addr, Type* type, bool is_be, u32 align)
 {
 	const u32 size = ::narrow<u32>(+type->getPrimitiveSizeInBits());
 
+	if (m_may_be_mmio && size == 32)
+	{
+		// Test for MMIO patterns
+		struct instructions_to_test
+		{
+			be_t<u32> insts[128];
+		};
+
+		m_may_be_mmio = false;
+
+		if (auto ptr = m_info.get_ptr<instructions_to_test>(std::max<u32>(m_info.segs[0].addr, (m_reloc ? m_reloc->addr : 0) + utils::sub_saturate<u32>(::narrow<u32>(m_addr), sizeof(instructions_to_test) / 2))))
+		{
+			if (ppu_test_address_may_be_mmio(std::span(ptr->insts)))
+			{
+				m_may_be_mmio = true;
+			}
+		}
+	}
+
 	if (is_be ^ m_is_be && size > 8)
 	{
+		llvm::Value* value{};
+
 		// Read, byteswap, bitcast
 		const auto int_type = m_ir->getIntNTy(size);
-		const auto value = m_ir->CreateAlignedLoad(int_type, GetMemory(addr, int_type), llvm::MaybeAlign{align}, true);
+
+		if (m_may_be_mmio && size == 32)
+		{
+			ppu_log.notice("LLVM: Detected potential MMIO32 read at [0x%08x]", m_addr + (m_reloc ? m_reloc->addr : 0));
+			value = Call(GetType<u32>(), "__read_maybe_mmio32", m_base, addr);
+		}
+		else
+		{
+			const auto inst = m_ir->CreateAlignedLoad(int_type, GetMemory(addr), llvm::MaybeAlign{align});
+			inst->setVolatile(true);
+			value = inst;
+		}
+
 		return bitcast(Call(int_type, fmt::format("llvm.bswap.i%u", size), value), type);
 	}
 
+	if (m_may_be_mmio && size == 32)
+	{
+		ppu_log.notice("LLVM: Detected potential MMIO32 read at [0x%08x]", m_addr + (m_reloc ? m_reloc->addr : 0));
+		return Call(GetType<u32>(), "__read_maybe_mmio32", m_base, addr);
+	}
+
 	// Read normally
-	return m_ir->CreateAlignedLoad(type, GetMemory(addr, type), llvm::MaybeAlign{align}, true);
+	const auto r = m_ir->CreateAlignedLoad(type, GetMemory(addr), llvm::MaybeAlign{align});
+	r->setVolatile(true);
+	return r;
 }
 
 void PPUTranslator::WriteMemory(Value* addr, Value* value, bool is_be, u32 align)
@@ -624,8 +718,27 @@ void PPUTranslator::WriteMemory(Value* addr, Value* value, bool is_be, u32 align
 		value = Call(int_type, fmt::format("llvm.bswap.i%u", size), bitcast(value, int_type));
 	}
 
+	if (m_may_be_mmio && size == 32)
+	{
+		// Test for MMIO patterns
+		struct instructions_to_test
+		{
+			be_t<u32> insts[128];
+		};
+
+		if (auto ptr = m_info.get_ptr<instructions_to_test>(std::max<u32>(m_info.segs[0].addr, (m_reloc ? m_reloc->addr : 0) + utils::sub_saturate<u32>(::narrow<u32>(m_addr), sizeof(instructions_to_test) / 2))))
+		{
+			if (ppu_test_address_may_be_mmio(std::span(ptr->insts)))
+			{
+				ppu_log.notice("LLVM: Detected potential MMIO32 write at [0x%08x]", m_addr + (m_reloc ? m_reloc->addr : 0));
+				Call(GetType<void>(), "__write_maybe_mmio32", m_base, addr, value);
+				return;
+			}
+		}
+	}
+
 	// Write
-	m_ir->CreateAlignedStore(value, GetMemory(addr, value->getType()), llvm::MaybeAlign{align}, true);
+	m_ir->CreateAlignedStore(value, GetMemory(addr), llvm::MaybeAlign{align})->setVolatile(true);
 }
 
 void PPUTranslator::CompilationError(const std::string& error)
@@ -943,7 +1056,7 @@ void PPUTranslator::VMADDFP(ppu_opcode_t op)
 	auto [a, b, c] = get_vrs<f32[4]>(op.va, op.vb, op.vc);
 
 	// Optimization: Emit only a floating multiply if the addend is zero
-	if (auto [ok, data] = get_const_vector(b.value, m_addr); ok)
+	if (auto [ok, data] = get_const_vector(b.value, ::narrow<u32>(m_addr)); ok)
 	{
 		if (data == v128::from32p(1u << 31))
 		{
@@ -1235,7 +1348,7 @@ void PPUTranslator::VNMSUBFP(ppu_opcode_t op)
 	auto [a, b, c] = get_vrs<f32[4]>(op.va, op.vb, op.vc);
 
 	// Optimization: Emit only a floating multiply if the addend is zero
-	if (const auto [ok, data] = get_const_vector(b.value, m_addr); ok)
+	if (const auto [ok, data] = get_const_vector(b.value, ::narrow<u32>(m_addr)); ok)
 	{
 		if (data == v128{})
 		{
@@ -1393,22 +1506,22 @@ void PPUTranslator::VREFP(ppu_opcode_t op)
 
 void PPUTranslator::VRFIM(ppu_opcode_t op)
 {
-	set_vr(op.vd, vec_handle_result(call<f32[4]>(get_intrinsic<f32[4]>(Intrinsic::floor), get_vr<f32[4]>(op.vb))));
+	set_vr(op.vd, vec_handle_result(callf<f32[4]>(get_intrinsic<f32[4]>(Intrinsic::floor), get_vr<f32[4]>(op.vb))));
 }
 
 void PPUTranslator::VRFIN(ppu_opcode_t op)
 {
-	set_vr(op.vd, vec_handle_result(call<f32[4]>(get_intrinsic<f32[4]>(Intrinsic::roundeven), get_vr<f32[4]>(op.vb))));
+	set_vr(op.vd, vec_handle_result(callf<f32[4]>(get_intrinsic<f32[4]>(Intrinsic::roundeven), get_vr<f32[4]>(op.vb))));
 }
 
 void PPUTranslator::VRFIP(ppu_opcode_t op)
 {
-	set_vr(op.vd, vec_handle_result(call<f32[4]>(get_intrinsic<f32[4]>(Intrinsic::ceil), get_vr<f32[4]>(op.vb))));
+	set_vr(op.vd, vec_handle_result(callf<f32[4]>(get_intrinsic<f32[4]>(Intrinsic::ceil), get_vr<f32[4]>(op.vb))));
 }
 
 void PPUTranslator::VRFIZ(ppu_opcode_t op)
 {
-	set_vr(op.vd, vec_handle_result(call<f32[4]>(get_intrinsic<f32[4]>(Intrinsic::trunc), get_vr<f32[4]>(op.vb))));
+	set_vr(op.vd, vec_handle_result(callf<f32[4]>(get_intrinsic<f32[4]>(Intrinsic::trunc), get_vr<f32[4]>(op.vb))));
 }
 
 void PPUTranslator::VRLB(ppu_opcode_t op)
@@ -1431,7 +1544,7 @@ void PPUTranslator::VRLW(ppu_opcode_t op)
 
 void PPUTranslator::VRSQRTEFP(ppu_opcode_t op)
 {
-	set_vr(op.vd, vec_handle_result(fsplat<f32[4]>(1.0) / call<f32[4]>(get_intrinsic<f32[4]>(Intrinsic::sqrt), get_vr<f32[4]>(op.vb))));
+	set_vr(op.vd, vec_handle_result(fsplat<f32[4]>(1.0) / callf<f32[4]>(get_intrinsic<f32[4]>(Intrinsic::sqrt), get_vr<f32[4]>(op.vb))));
 }
 
 void PPUTranslator::VSEL(ppu_opcode_t op)
@@ -1439,7 +1552,7 @@ void PPUTranslator::VSEL(ppu_opcode_t op)
 	const auto c = get_vr<u32[4]>(op.vc);
 
 	// Check if the constant mask doesn't require bit granularity
-	if (auto [ok, mask] = get_const_vector(c.value, m_addr); ok)
+	if (auto [ok, mask] = get_const_vector(c.value, ::narrow<u32>(m_addr)); ok)
 	{
 		bool sel_32 = true;
 		for (u32 i = 0; i < 4; i++)
@@ -1945,12 +2058,14 @@ void PPUTranslator::SC(ppu_opcode_t op)
 		if (index < 1024)
 		{
 			Call(GetType<void>(), fmt::format("%s", ppu_syscall_code(index)), m_thread);
+			//Call(GetType<void>(), "__escape", m_thread)->setTailCall();
 			m_ir->CreateRetVoid();
 			return;
 		}
 	}
 
 	Call(GetType<void>(), op.lev ? "__lv1call" : "__syscall", m_thread, num);
+	//Call(GetType<void>(), "__escape", m_thread)->setTailCall();
 	m_ir->CreateRetVoid();
 }
 
@@ -2507,6 +2622,7 @@ void PPUTranslator::LWARX(ppu_opcode_t op)
 		RegStore(Trunc(GetAddr()), m_cia);
 		FlushRegisters();
 		Call(GetType<void>(), "__resinterp", m_thread);
+		//Call(GetType<void>(), "__escape", m_thread)->setTailCall();
 		m_ir->CreateRetVoid();
 		return;
 	}
@@ -2521,6 +2637,7 @@ void PPUTranslator::LDX(ppu_opcode_t op)
 
 void PPUTranslator::LWZX(ppu_opcode_t op)
 {
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u && op.rb != 1u && op.rb != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculation
 	SetGpr(op.rd, ReadMemory(op.ra ? m_ir->CreateAdd(GetGpr(op.ra), GetGpr(op.rb)) : GetGpr(op.rb), GetType<u32>()));
 }
 
@@ -2595,6 +2712,8 @@ void PPUTranslator::DCBST(ppu_opcode_t)
 
 void PPUTranslator::LWZUX(ppu_opcode_t op)
 {
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u && op.rb != 1u && op.rb != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculation
+
 	const auto addr = m_ir->CreateAdd(GetGpr(op.ra), GetGpr(op.rb));
 	SetGpr(op.rd, ReadMemory(addr, GetType<u32>()));
 	SetGpr(op.ra, addr);
@@ -2649,6 +2768,7 @@ void PPUTranslator::LDARX(ppu_opcode_t op)
 		RegStore(Trunc(GetAddr()), m_cia);
 		FlushRegisters();
 		Call(GetType<void>(), "__resinterp", m_thread);
+		//Call(GetType<void>(), "__escape", m_thread)->setTailCall();
 		m_ir->CreateRetVoid();
 		return;
 	}
@@ -2784,13 +2904,9 @@ void PPUTranslator::MTOCRF(ppu_opcode_t op)
 			std::fill_n(m_g_cr + i * 4, 4, nullptr);
 
 			const auto index = m_ir->CreateAnd(m_ir->CreateLShr(value, 28 - i * 4), 15);
-			const auto src = m_ir->CreateGEP(dyn_cast<GlobalVariable>(m_mtocr_table)->getValueType(), m_mtocr_table, {m_ir->getInt32(0), m_ir->CreateShl(index, 2)});
-			const auto dst = bitcast(m_ir->CreateStructGEP(m_thread_type, m_thread, static_cast<uint>(m_cr - m_locals) + i * 4), GetType<u8*>());
-#if LLVM_VERSION_MAJOR < 15
-			Call(GetType<void>(), "llvm.memcpy.p0i8.p0i8.i32", dst, src, m_ir->getInt32(4), m_ir->getFalse());
-#else
+			const auto src = m_ir->CreateGEP(m_mtocr_table->getValueType(), m_mtocr_table, {m_ir->getInt32(0), m_ir->CreateShl(index, 2)});
+			const auto dst = m_ir->CreateStructGEP(m_thread_type, m_thread, static_cast<uint>(m_cr - m_locals) + i * 4);
 			Call(GetType<void>(), "llvm.memcpy.p0.p0.i32", dst, src, m_ir->getInt32(4), m_ir->getFalse());
-#endif
 		}
 	}
 }
@@ -2808,6 +2924,7 @@ void PPUTranslator::STWCX(ppu_opcode_t op)
 
 void PPUTranslator::STWX(ppu_opcode_t op)
 {
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u && op.rb != 1u && op.rb != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculation
 	WriteMemory(op.ra ? m_ir->CreateAdd(GetGpr(op.ra), GetGpr(op.rb)) : GetGpr(op.rb), GetGpr(op.rs, 32));
 }
 
@@ -2827,6 +2944,7 @@ void PPUTranslator::STDUX(ppu_opcode_t op)
 void PPUTranslator::STWUX(ppu_opcode_t op)
 {
 	const auto addr = m_ir->CreateAdd(GetGpr(op.ra), GetGpr(op.rb));
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u && op.rb != 1u && op.rb != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculation
 	WriteMemory(addr, GetGpr(op.rs, 32));
 	SetGpr(op.ra, addr);
 }
@@ -3210,6 +3328,7 @@ void PPUTranslator::LWBRX(ppu_opcode_t op)
 
 void PPUTranslator::LFSX(ppu_opcode_t op)
 {
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u && op.rb != 1u && op.rb != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculation
 	SetFpr(op.frd, ReadMemory(op.ra ? m_ir->CreateAdd(GetGpr(op.ra), GetGpr(op.rb)) : GetGpr(op.rb), GetType<f32>()));
 }
 
@@ -3234,8 +3353,11 @@ void PPUTranslator::SRD(ppu_opcode_t op)
 void PPUTranslator::LVRX(ppu_opcode_t op)
 {
 	const auto addr = op.ra ? m_ir->CreateAdd(GetGpr(op.ra), GetGpr(op.rb)) : GetGpr(op.rb);
-	const auto data = ReadMemory(m_ir->CreateAnd(addr, ~0xfull), GetType<u8[16]>(), m_is_be, 16);
-	set_vr(op.vd, pshufb(value<u8[16]>(data), build<u8[16]>(255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240) + vsplat<u8[16]>(trunc<u8>(value<u64>(addr) & 0xf))));
+	const auto offset = eval(trunc<u8>(value<u64>(addr) & 0xf));
+
+	// Read from instruction address if offset is 0, this prevents accessing potentially bad memory from addr (because no actual memory is dereferenced)
+	const auto data = ReadMemory(m_ir->CreateAnd(m_ir->CreateSelect(m_ir->CreateIsNull(offset.value), m_reloc ? m_seg0 : GetAddr(0), addr), ~0xfull), GetType<u8[16]>(), m_is_be, 16);
+	set_vr(op.vd, pshufb(value<u8[16]>(data), build<u8[16]>(255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240) + vsplat<u8[16]>(offset)));
 }
 
 void PPUTranslator::LSWI(ppu_opcode_t op)
@@ -3290,8 +3412,8 @@ void PPUTranslator::LFSUX(ppu_opcode_t op)
 void PPUTranslator::SYNC(ppu_opcode_t op)
 {
 	// sync: Full seq cst barrier
-	// lwsync: Acq/Release barrier
-	m_ir->CreateFence(op.l10 ? AtomicOrdering::AcquireRelease : AtomicOrdering::SequentiallyConsistent);
+	// lwsync: Acq/Release barrier (but not really it seems from observing libsre.sprx)
+	m_ir->CreateFence(op.l10 && false ? AtomicOrdering::AcquireRelease : AtomicOrdering::SequentiallyConsistent);
 }
 
 void PPUTranslator::LFDX(ppu_opcode_t op)
@@ -3311,9 +3433,9 @@ void PPUTranslator::STVLX(ppu_opcode_t op)
 	const auto addr = op.ra ? m_ir->CreateAdd(GetGpr(op.ra), GetGpr(op.rb)) : GetGpr(op.rb);
 	const auto data = pshufb(get_vr<u8[16]>(op.vs), build<u8[16]>(127, 126, 125, 124, 123, 122, 121, 120, 119, 118, 117, 116, 115, 114, 113, 112) + vsplat<u8[16]>(trunc<u8>(value<u64>(addr) & 0xf)));
 	const auto mask = bitcast<bool[16]>(splat<u16>(0xffff) << trunc<u16>(value<u64>(addr) & 0xf));
-	const auto ptr = value<u8(*)[16]>(GetMemory(m_ir->CreateAnd(addr, ~0xfull), GetType<u8[16]>()));
+	const auto ptr = value<u8(*)[16]>(GetMemory(m_ir->CreateAnd(addr, ~0xfull)));
 	const auto align = splat<u32>(16);
-	eval(llvm_calli<void, decltype(data), decltype(ptr), decltype(align), decltype(mask)>{"llvm.masked.store.v16i8.p0v16i8", {data, ptr, align, mask}});
+	eval(llvm_calli<void, decltype(data), decltype(ptr), decltype(align), decltype(mask)>{"llvm.masked.store.v16i8.p0", {data, ptr, align, mask}});
 }
 
 void PPUTranslator::STDBRX(ppu_opcode_t op)
@@ -3341,9 +3463,9 @@ void PPUTranslator::STVRX(ppu_opcode_t op)
 	const auto addr = op.ra ? m_ir->CreateAdd(GetGpr(op.ra), GetGpr(op.rb)) : GetGpr(op.rb);
 	const auto data = pshufb(get_vr<u8[16]>(op.vs), build<u8[16]>(255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240) + vsplat<u8[16]>(trunc<u8>(value<u64>(addr) & 0xf)));
 	const auto mask = bitcast<bool[16]>(trunc<u16>(splat<u64>(0xffff) << (value<u64>(addr) & 0xf) >> 16));
-	const auto ptr = value<u8(*)[16]>(GetMemory(m_ir->CreateAnd(addr, ~0xfull), GetType<u8[16]>()));
+	const auto ptr = value<u8(*)[16]>(GetMemory(m_ir->CreateAnd(addr, ~0xfull)));
 	const auto align = splat<u32>(16);
-	eval(llvm_calli<void, decltype(data), decltype(ptr), decltype(align), decltype(mask)>{"llvm.masked.store.v16i8.p0v16i8", {data, ptr, align, mask}});
+	eval(llvm_calli<void, decltype(data), decltype(ptr), decltype(align), decltype(mask)>{"llvm.masked.store.v16i8.p0", {data, ptr, align, mask}});
 }
 
 void PPUTranslator::STFSUX(ppu_opcode_t op)
@@ -3524,7 +3646,7 @@ void PPUTranslator::DCBZ(ppu_opcode_t op)
 	}
 	else
 	{
-		Call(GetType<void>(), "llvm.memset.p0i8.i32", GetMemory(addr, GetType<u8>()), m_ir->getInt8(0), m_ir->getInt32(128), m_ir->getTrue());
+		Call(GetType<void>(), "llvm.memset.p0.i32", GetMemory(addr), m_ir->getInt8(0), m_ir->getInt32(128), m_ir->getFalse());
 	}
 }
 
@@ -3536,6 +3658,50 @@ void PPUTranslator::LWZ(ppu_opcode_t op)
 	{
 		imm = SExt(ReadMemory(GetAddr(+2), GetType<u16>()), GetType<u64>());
 		m_rel = nullptr;
+	}
+
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculation
+	m_may_be_mmio &= op.simm16 == 0 || spu_thread::test_is_problem_state_register_offset(op.uimm16, true, false); // Either exact MMIO address or MMIO base with completing s16 address offset
+
+	if (m_may_be_mmio)
+	{
+		struct instructions_data
+		{
+			be_t<u32> insts[3];
+		};
+
+		// Quick invalidation: expect exact MMIO address, so if the register is being reused with different offset than it's likely not MMIO
+		if (auto ptr = m_info.get_ptr<instructions_data>(::narrow<u32>(m_addr + 4 + (m_reloc ? m_reloc->addr : 0))))
+		{
+			for (u32 inst : ptr->insts)
+			{
+				ppu_opcode_t test_op{inst};
+
+				if (test_op.simm16 == op.simm16 || test_op.ra != op.ra)
+				{
+					// Same offset (at least according to this test) or different register
+					continue;
+				}
+
+				if (op.simm16 && spu_thread::test_is_problem_state_register_offset(test_op.uimm16, true, false))
+				{
+					// Found register reuse with different MMIO offset
+					continue;
+				}
+
+				switch (g_ppu_itype.decode(inst))
+				{
+				case ppu_itype::LWZ:
+				case ppu_itype::STW:
+				{
+					// Not MMIO
+					m_may_be_mmio = false;
+					break;
+				}
+				default: break;
+				}
+			}
+		}
 	}
 
 	SetGpr(op.rd, ReadMemory(op.ra ? m_ir->CreateAdd(GetGpr(op.ra), imm) : imm, GetType<u32>()));
@@ -3550,6 +3716,9 @@ void PPUTranslator::LWZU(ppu_opcode_t op)
 		imm = SExt(ReadMemory(GetAddr(+2), GetType<u16>()), GetType<u64>());
 		m_rel = nullptr;
 	}
+
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculation
+	m_may_be_mmio &= op.simm16 == 0 || spu_thread::test_is_problem_state_register_offset(op.uimm16, true, false); // Either exact MMIO address or MMIO base with completing s16 address offset
 
 	const auto addr = m_ir->CreateAdd(GetGpr(op.ra), imm);
 	SetGpr(op.rd, ReadMemory(addr, GetType<u32>()));
@@ -3594,6 +3763,50 @@ void PPUTranslator::STW(ppu_opcode_t op)
 		m_rel = nullptr;
 	}
 
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculation
+	m_may_be_mmio &= op.simm16 == 0 || spu_thread::test_is_problem_state_register_offset(op.uimm16, false, true); // Either exact MMIO address or MMIO base with completing s16 address offset
+
+	if (m_may_be_mmio)
+	{
+		struct instructions_data
+		{
+			be_t<u32> insts[3];
+		};
+
+		// Quick invalidation: expect exact MMIO address, so if the register is being reused with different offset than it's likely not MMIO
+		if (auto ptr = m_info.get_ptr<instructions_data>(::narrow<u32>(m_addr + 4 + (m_reloc ? m_reloc->addr : 0))))
+		{
+			for (u32 inst : ptr->insts)
+			{
+				ppu_opcode_t test_op{inst};
+
+				if (test_op.simm16 == op.simm16 || test_op.ra != op.ra)
+				{
+					// Same offset (at least according to this test) or different register
+					continue;
+				}
+
+				if (op.simm16 && spu_thread::test_is_problem_state_register_offset(test_op.uimm16, false, true))
+				{
+					// Found register reuse with different MMIO offset
+					continue;
+				}
+
+				switch (g_ppu_itype.decode(inst))
+				{
+				case ppu_itype::LWZ:
+				case ppu_itype::STW:
+				{
+					// Not MMIO
+					m_may_be_mmio = false;
+					break;
+				}
+				default: break;
+				}
+			}
+		}
+	}
+
 	const auto value = GetGpr(op.rs, 32);
 	const auto addr = op.ra ? m_ir->CreateAdd(GetGpr(op.ra), imm) : imm;
 	WriteMemory(addr, value);
@@ -3617,6 +3830,9 @@ void PPUTranslator::STWU(ppu_opcode_t op)
 		imm = SExt(ReadMemory(GetAddr(+2), GetType<u16>()), GetType<u64>());
 		m_rel = nullptr;
 	}
+
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u);// Stack register and TLS address register are unlikely to be used in MMIO address calculatio
+	m_may_be_mmio &= op.simm16 == 0 || spu_thread::test_is_problem_state_register_offset(op.uimm16, false, true); // Either exact MMIO address or MMIO base with completing s16 address offset
 
 	const auto addr = m_ir->CreateAdd(GetGpr(op.ra), imm);
 	WriteMemory(addr, GetGpr(op.rs, 32));
@@ -3737,6 +3953,8 @@ void PPUTranslator::STHU(ppu_opcode_t op)
 
 void PPUTranslator::LMW(ppu_opcode_t op)
 {
+	m_may_be_mmio &= op.rd == 31u && (op.ra != 1u && op.ra != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculatio
+
 	for (u32 i = 0; i < 32 - op.rd; i++)
 	{
 		SetGpr(i + op.rd, ReadMemory(op.ra ? m_ir->CreateAdd(m_ir->getInt64(op.simm16 + i * 4), GetGpr(op.ra)) : m_ir->getInt64(op.simm16 + i * 4), GetType<u32>()));
@@ -3745,6 +3963,8 @@ void PPUTranslator::LMW(ppu_opcode_t op)
 
 void PPUTranslator::STMW(ppu_opcode_t op)
 {
+	m_may_be_mmio &= op.rs == 31u && (op.ra != 1u && op.ra != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculatio
+
 	for (u32 i = 0; i < 32 - op.rs; i++)
 	{
 		WriteMemory(op.ra ? m_ir->CreateAdd(m_ir->getInt64(op.simm16 + i * 4), GetGpr(op.ra)) : m_ir->getInt64(op.simm16 + i * 4), GetGpr(i + op.rs, 32));
@@ -3761,6 +3981,9 @@ void PPUTranslator::LFS(ppu_opcode_t op)
 		m_rel = nullptr;
 	}
 
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculatio
+	m_may_be_mmio &= op.simm16 == 0 || spu_thread::test_is_problem_state_register_offset(op.uimm16, true, false); // Either exact MMIO address or MMIO base with completing s16 address offset
+
 	SetFpr(op.frd, ReadMemory(op.ra ? m_ir->CreateAdd(GetGpr(op.ra), imm) : imm, GetType<f32>()));
 }
 
@@ -3773,6 +3996,9 @@ void PPUTranslator::LFSU(ppu_opcode_t op)
 		imm = SExt(ReadMemory(GetAddr(+2), GetType<u16>()), GetType<u64>());
 		m_rel = nullptr;
 	}
+
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculatio
+	m_may_be_mmio &= op.simm16 == 0 || spu_thread::test_is_problem_state_register_offset(op.uimm16, true, false); // Either exact MMIO address or MMIO base with completing s16 address offset
 
 	const auto addr = m_ir->CreateAdd(GetGpr(op.ra), imm);
 	SetFpr(op.frd, ReadMemory(addr, GetType<f32>()));
@@ -3816,7 +4042,12 @@ void PPUTranslator::STFS(ppu_opcode_t op)
 		imm = SExt(ReadMemory(GetAddr(+2), GetType<u16>()), GetType<u64>());
 		m_rel = nullptr;
 	}
+	else
+	{
+		m_may_be_mmio &= op.simm16 == 0 || spu_thread::test_is_problem_state_register_offset(op.uimm16, false, true); // Either exact MMIO address or MMIO base with completing s16 address offset
+	}
 
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculation
 	WriteMemory(op.ra ? m_ir->CreateAdd(GetGpr(op.ra), imm) : imm, GetFpr(op.frs, 32));
 }
 
@@ -3829,6 +4060,12 @@ void PPUTranslator::STFSU(ppu_opcode_t op)
 		imm = SExt(ReadMemory(GetAddr(+2), GetType<u16>()), GetType<u64>());
 		m_rel = nullptr;
 	}
+	else
+	{
+		m_may_be_mmio &= op.simm16 == 0 || spu_thread::test_is_problem_state_register_offset(op.uimm16, false, true); // Either exact MMIO address or MMIO base with completing s16 address offset
+	}
+
+	m_may_be_mmio &= (op.ra != 1u && op.ra != 13u); // Stack register and TLS address register are unlikely to be used in MMIO address calculation
 
 	const auto addr = m_ir->CreateAdd(GetGpr(op.ra), imm);
 	WriteMemory(addr, GetFpr(op.frs, 32));
@@ -4009,7 +4246,7 @@ void PPUTranslator::FRES(ppu_opcode_t op)
 	const auto n = m_ir->CreateFCmpUNO(a, a); // test for NaN
 	const auto e = m_ir->CreateAnd(m_ir->CreateLShr(b, 52), 0x7ff); // double exp
 	const auto i = m_ir->CreateAnd(m_ir->CreateLShr(b, 45), 0x7f); // mantissa LUT index
-	const auto ptr = dyn_cast<GetElementPtrInst>(m_ir->CreateGEP(dyn_cast<GlobalVariable>(m_fres_table)->getValueType(), m_fres_table, {m_ir->getInt64(0), i}));
+	const auto ptr = dyn_cast<GetElementPtrInst>(m_ir->CreateGEP(m_fres_table->getValueType(), m_fres_table, {m_ir->getInt64(0), i}));
 	assert(ptr->getResultElementType() == get_type<u32>());
 	const auto m = m_ir->CreateShl(ZExt(m_ir->CreateLoad(ptr->getResultElementType(), ptr)), 29);
 	const auto c = m_ir->CreateICmpUGE(e, m_ir->getInt64(0x3ff + 0x80)); // test for INF
@@ -4382,7 +4619,7 @@ void PPUTranslator::FRSQRTE(ppu_opcode_t op)
 	}
 
 	const auto b = m_ir->CreateBitCast(GetFpr(op.frb), GetType<u64>());
-	const auto ptr = dyn_cast<GetElementPtrInst>(m_ir->CreateGEP(dyn_cast<GlobalVariable>(m_frsqrte_table)->getValueType(), m_frsqrte_table, {m_ir->getInt64(0), m_ir->CreateLShr(b, 49)}));
+	const auto ptr = dyn_cast<GetElementPtrInst>(m_ir->CreateGEP(m_frsqrte_table->getValueType(), m_frsqrte_table, {m_ir->getInt64(0), m_ir->CreateLShr(b, 49)}));
 	assert(ptr->getResultElementType() == get_type<u32>());
 	const auto v = m_ir->CreateLoad(ptr->getResultElementType(), ptr);
 	const auto result = m_ir->CreateBitCast(m_ir->CreateShl(ZExt(v), 32), GetType<f64>());
@@ -4601,6 +4838,7 @@ void PPUTranslator::UNK(ppu_opcode_t op)
 {
 	FlushRegisters();
 	Call(GetType<void>(), "__error", m_thread, GetAddr(), m_ir->getInt32(op.opcode));
+	//Call(GetType<void>(), "__escape", m_thread)->setTailCall();
 	m_ir->CreateRetVoid();
 }
 
@@ -4850,18 +5088,38 @@ void PPUTranslator::SetOverflow(Value* bit)
 
 Value* PPUTranslator::CheckTrapCondition(u32 to, Value* left, Value* right)
 {
-	Value* trap_condition = m_ir->getFalse();
-	if (to & 0x10) trap_condition = m_ir->CreateOr(trap_condition, m_ir->CreateICmpSLT(left, right));
-	if (to & 0x8) trap_condition = m_ir->CreateOr(trap_condition, m_ir->CreateICmpSGT(left, right));
-	if (to & 0x4) trap_condition = m_ir->CreateOr(trap_condition, m_ir->CreateICmpEQ(left, right));
-	if (to & 0x2) trap_condition = m_ir->CreateOr(trap_condition, m_ir->CreateICmpULT(left, right));
-	if (to & 0x1) trap_condition = m_ir->CreateOr(trap_condition, m_ir->CreateICmpUGT(left, right));
-	return trap_condition;
+	if ((to & 0x3) == 0x3 || (to & 0x18) == 0x18)
+	{
+		// Not-equal check or always-true
+		return to & 0x4 ? m_ir->getTrue() : m_ir->CreateICmpNE(left, right);
+	}
+
+	Value* trap_condition = nullptr;
+
+	auto add_condition = [&](Value* cond)
+	{
+		if (!trap_condition)
+		{
+			trap_condition = cond;
+			return;
+		}
+
+		trap_condition = m_ir->CreateOr(trap_condition, cond);
+	};
+
+	if (to & 0x10) add_condition(m_ir->CreateICmpSLT(left, right));
+	if (to & 0x8) add_condition(m_ir->CreateICmpSGT(left, right));
+	if (to & 0x4) add_condition(m_ir->CreateICmpEQ(left, right));
+	if (to & 0x2) add_condition(m_ir->CreateICmpULT(left, right));
+	if (to & 0x1) add_condition(m_ir->CreateICmpUGT(left, right));
+
+	return trap_condition ? trap_condition : m_ir->getFalse();
 }
 
 void PPUTranslator::Trap()
 {
 	Call(GetType<void>(), "__trap", m_thread, GetAddr());
+	//Call(GetType<void>(), "__escape", m_thread)->setTailCall();
 	m_ir->CreateRetVoid();
 }
 
@@ -4907,6 +5165,186 @@ MDNode* PPUTranslator::CheckBranchProbability(u32 bo)
 	}
 
 	return nullptr;
+}
+
+void PPUTranslator::build_interpreter()
+{
+#define BUILD_VEC_INST(i) { \
+		m_function = llvm::cast<llvm::Function>(m_module->getOrInsertFunction("op_" #i, get_type<void>(), m_thread_type->getPointerTo()).getCallee()); \
+		std::fill(std::begin(m_globals), std::end(m_globals), nullptr); \
+		std::fill(std::begin(m_locals), std::end(m_locals), nullptr); \
+		IRBuilder<> irb(BasicBlock::Create(m_context, "__entry", m_function)); \
+		m_ir = &irb; \
+		m_thread = m_function->getArg(0); \
+		ppu_opcode_t op{}; \
+		op.vd = 0; \
+		op.va = 1; \
+		op.vb = 2; \
+		op.vc = 3; \
+		this->i(op); \
+		FlushRegisters(); \
+		m_ir->CreateRetVoid(); \
+		replace_intrinsics(*m_function); \
+	}
+
+	BUILD_VEC_INST(VADDCUW);
+	BUILD_VEC_INST(VADDFP);
+	BUILD_VEC_INST(VADDSBS);
+	BUILD_VEC_INST(VADDSHS);
+	BUILD_VEC_INST(VADDSWS);
+	BUILD_VEC_INST(VADDUBM);
+	BUILD_VEC_INST(VADDUBS);
+	BUILD_VEC_INST(VADDUHM);
+	BUILD_VEC_INST(VADDUHS);
+	BUILD_VEC_INST(VADDUWM);
+	BUILD_VEC_INST(VADDUWS);
+	BUILD_VEC_INST(VAND);
+	BUILD_VEC_INST(VANDC);
+	BUILD_VEC_INST(VAVGSB);
+	BUILD_VEC_INST(VAVGSH);
+	BUILD_VEC_INST(VAVGSW);
+	BUILD_VEC_INST(VAVGUB);
+	BUILD_VEC_INST(VAVGUH);
+	BUILD_VEC_INST(VAVGUW);
+	BUILD_VEC_INST(VCFSX);
+	BUILD_VEC_INST(VCFUX);
+	BUILD_VEC_INST(VCMPBFP);
+	BUILD_VEC_INST(VCMPBFP_);
+	BUILD_VEC_INST(VCMPEQFP);
+	BUILD_VEC_INST(VCMPEQFP_);
+	BUILD_VEC_INST(VCMPEQUB);
+	BUILD_VEC_INST(VCMPEQUB_);
+	BUILD_VEC_INST(VCMPEQUH);
+	BUILD_VEC_INST(VCMPEQUH_);
+	BUILD_VEC_INST(VCMPEQUW);
+	BUILD_VEC_INST(VCMPEQUW_);
+	BUILD_VEC_INST(VCMPGEFP);
+	BUILD_VEC_INST(VCMPGEFP_);
+	BUILD_VEC_INST(VCMPGTFP);
+	BUILD_VEC_INST(VCMPGTFP_);
+	BUILD_VEC_INST(VCMPGTSB);
+	BUILD_VEC_INST(VCMPGTSB_);
+	BUILD_VEC_INST(VCMPGTSH);
+	BUILD_VEC_INST(VCMPGTSH_);
+	BUILD_VEC_INST(VCMPGTSW);
+	BUILD_VEC_INST(VCMPGTSW_);
+	BUILD_VEC_INST(VCMPGTUB);
+	BUILD_VEC_INST(VCMPGTUB_);
+	BUILD_VEC_INST(VCMPGTUH);
+	BUILD_VEC_INST(VCMPGTUH_);
+	BUILD_VEC_INST(VCMPGTUW);
+	BUILD_VEC_INST(VCMPGTUW_);
+	BUILD_VEC_INST(VCTSXS);
+	BUILD_VEC_INST(VCTUXS);
+	BUILD_VEC_INST(VEXPTEFP);
+	BUILD_VEC_INST(VLOGEFP);
+	BUILD_VEC_INST(VMADDFP);
+	BUILD_VEC_INST(VMAXFP);
+	BUILD_VEC_INST(VMAXSB);
+	BUILD_VEC_INST(VMAXSH);
+	BUILD_VEC_INST(VMAXSW);
+	BUILD_VEC_INST(VMAXUB);
+	BUILD_VEC_INST(VMAXUH);
+	BUILD_VEC_INST(VMAXUW);
+	BUILD_VEC_INST(VMHADDSHS);
+	BUILD_VEC_INST(VMHRADDSHS);
+	BUILD_VEC_INST(VMINFP);
+	BUILD_VEC_INST(VMINSB);
+	BUILD_VEC_INST(VMINSH);
+	BUILD_VEC_INST(VMINSW);
+	BUILD_VEC_INST(VMINUB);
+	BUILD_VEC_INST(VMINUH);
+	BUILD_VEC_INST(VMINUW);
+	BUILD_VEC_INST(VMLADDUHM);
+	BUILD_VEC_INST(VMRGHB);
+	BUILD_VEC_INST(VMRGHH);
+	BUILD_VEC_INST(VMRGHW);
+	BUILD_VEC_INST(VMRGLB);
+	BUILD_VEC_INST(VMRGLH);
+	BUILD_VEC_INST(VMRGLW);
+	BUILD_VEC_INST(VMSUMMBM);
+	BUILD_VEC_INST(VMSUMSHM);
+	BUILD_VEC_INST(VMSUMSHS);
+	BUILD_VEC_INST(VMSUMUBM);
+	BUILD_VEC_INST(VMSUMUHM);
+	BUILD_VEC_INST(VMSUMUHS);
+	BUILD_VEC_INST(VMULESB);
+	BUILD_VEC_INST(VMULESH);
+	BUILD_VEC_INST(VMULEUB);
+	BUILD_VEC_INST(VMULEUH);
+	BUILD_VEC_INST(VMULOSB);
+	BUILD_VEC_INST(VMULOSH);
+	BUILD_VEC_INST(VMULOUB);
+	BUILD_VEC_INST(VMULOUH);
+	BUILD_VEC_INST(VNMSUBFP);
+	BUILD_VEC_INST(VNOR);
+	BUILD_VEC_INST(VOR);
+	BUILD_VEC_INST(VPERM);
+	BUILD_VEC_INST(VPKPX);
+	BUILD_VEC_INST(VPKSHSS);
+	BUILD_VEC_INST(VPKSHUS);
+	BUILD_VEC_INST(VPKSWSS);
+	BUILD_VEC_INST(VPKSWUS);
+	BUILD_VEC_INST(VPKUHUM);
+	BUILD_VEC_INST(VPKUHUS);
+	BUILD_VEC_INST(VPKUWUM);
+	BUILD_VEC_INST(VPKUWUS);
+	BUILD_VEC_INST(VREFP);
+	BUILD_VEC_INST(VRFIM);
+	BUILD_VEC_INST(VRFIN);
+	BUILD_VEC_INST(VRFIP);
+	BUILD_VEC_INST(VRFIZ);
+	BUILD_VEC_INST(VRLB);
+	BUILD_VEC_INST(VRLH);
+	BUILD_VEC_INST(VRLW);
+	BUILD_VEC_INST(VRSQRTEFP);
+	BUILD_VEC_INST(VSEL);
+	BUILD_VEC_INST(VSL);
+	BUILD_VEC_INST(VSLB);
+	BUILD_VEC_INST(VSLDOI);
+	BUILD_VEC_INST(VSLH);
+	BUILD_VEC_INST(VSLO);
+	BUILD_VEC_INST(VSLW);
+	BUILD_VEC_INST(VSPLTB);
+	BUILD_VEC_INST(VSPLTH);
+	BUILD_VEC_INST(VSPLTISB);
+	BUILD_VEC_INST(VSPLTISH);
+	BUILD_VEC_INST(VSPLTISW);
+	BUILD_VEC_INST(VSPLTW);
+	BUILD_VEC_INST(VSR);
+	BUILD_VEC_INST(VSRAB);
+	BUILD_VEC_INST(VSRAH);
+	BUILD_VEC_INST(VSRAW);
+	BUILD_VEC_INST(VSRB);
+	BUILD_VEC_INST(VSRH);
+	BUILD_VEC_INST(VSRO);
+	BUILD_VEC_INST(VSRW);
+	BUILD_VEC_INST(VSUBCUW);
+	BUILD_VEC_INST(VSUBFP);
+	BUILD_VEC_INST(VSUBSBS);
+	BUILD_VEC_INST(VSUBSHS);
+	BUILD_VEC_INST(VSUBSWS);
+	BUILD_VEC_INST(VSUBUBM);
+	BUILD_VEC_INST(VSUBUBS);
+	BUILD_VEC_INST(VSUBUHM);
+	BUILD_VEC_INST(VSUBUHS);
+	BUILD_VEC_INST(VSUBUWM);
+	BUILD_VEC_INST(VSUBUWS);
+	BUILD_VEC_INST(VSUMSWS);
+	BUILD_VEC_INST(VSUM2SWS);
+	BUILD_VEC_INST(VSUM4SBS);
+	BUILD_VEC_INST(VSUM4SHS);
+	BUILD_VEC_INST(VSUM4UBS);
+	BUILD_VEC_INST(VUPKHPX);
+	BUILD_VEC_INST(VUPKHSB);
+	BUILD_VEC_INST(VUPKHSH);
+	BUILD_VEC_INST(VUPKLPX);
+	BUILD_VEC_INST(VUPKLSB);
+	BUILD_VEC_INST(VUPKLSH);
+	BUILD_VEC_INST(VXOR);
+#undef BUILD_VEC_INST
+
+
 }
 
 #endif

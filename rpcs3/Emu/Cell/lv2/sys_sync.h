@@ -8,7 +8,6 @@
 #include "Emu/Cell/timers.hpp"
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
-#include "Emu/system_config.h"
 
 #include <thread>
 
@@ -61,6 +60,11 @@ enum
 
 enum ppu_thread_status : u32;
 
+namespace vm
+{
+	extern u8 g_reservations[65536 / 128 * 64];
+}
+
 // Base class for some kernel objects (shared set of 8192 objects).
 struct lv2_obj
 {
@@ -85,6 +89,11 @@ private:
 public:
 	SAVESTATE_INIT_POS(4); // Dependency on PPUs
 
+	lv2_obj() noexcept = default;
+	lv2_obj(u32 i) noexcept : exists{ i } {}
+	lv2_obj(utils::serial&) noexcept {}
+	void save(utils::serial&) {}
+
 	// Existence validation (workaround for shared-ptr ref-counting)
 	atomic_t<u32> exists = 0;
 
@@ -94,20 +103,16 @@ public:
 		return ptr && ptr->exists;
 	}
 
-	static std::string name64(u64 name_u64)
+	// wrapper for name64 string formatting
+	struct name_64
 	{
-		const auto ptr = reinterpret_cast<const char*>(&name_u64);
+		u64 data;
+	};
 
-		// NTS string, ignore invalid/newline characters
-		// Example: "lv2\n\0tx" will be printed as "lv2"
-		std::string str{ptr, std::find(ptr, ptr + 7, '\0')};
-		str.erase(std::remove_if(str.begin(), str.end(), [](uchar c){ return !std::isprint(c); }), str.end());
-
-		return str;
-	}
+	static std::string name64(u64 name_u64);
 
 	// Find and remove the object from the linked list
-	template <typename T>
+	template <bool ModifyNode = true, typename T>
 	static T* unqueue(T*& first, T* object, T* T::* mem_ptr = &T::next_cpu)
 	{
 		auto it = +first;
@@ -115,7 +120,12 @@ public:
 		if (it == object)
 		{
 			atomic_storage<T*>::release(first, it->*mem_ptr);
-			atomic_storage<T*>::release(it->*mem_ptr, nullptr);
+
+			if constexpr (ModifyNode)
+			{
+				atomic_storage<T*>::release(it->*mem_ptr, nullptr);
+			}
+
 			return it;
 		}
 
@@ -126,7 +136,12 @@ public:
 			if (next == object)
 			{
 				atomic_storage<T*>::release(it->*mem_ptr, next->*mem_ptr);
-				atomic_storage<T*>::release(next->*mem_ptr, nullptr);
+
+				if constexpr (ModifyNode)
+				{
+					atomic_storage<T*>::release(next->*mem_ptr, nullptr);
+				}
+
 				return next;
 			}
 
@@ -138,7 +153,7 @@ public:
 
 	// Remove an object from the linked set according to the protocol
 	template <typename E, typename T>
-	static E* schedule(T& first, u32 protocol)
+	static E* schedule(T& first, u32 protocol, bool modify_node = true)
 	{
 		auto it = static_cast<E*>(first);
 
@@ -162,7 +177,7 @@ public:
 					continue;
 				}
 
-				if (it && cpu_flag::again - it->state)
+				if (cpu_flag::again - it->state)
 				{
 					atomic_storage<T>::release(*parent_found, nullptr);
 				}
@@ -171,7 +186,7 @@ public:
 			}
 		}
 
-		s32 prio = it->prio;
+		auto prio = it->prio.load();
 		auto found = it;
 
 		while (true)
@@ -184,10 +199,10 @@ public:
 				break;
 			}
 
-			const s32 _prio = static_cast<E*>(next)->prio;
+			const auto _prio = static_cast<E*>(next)->prio.load();
 
-			// This condition tests for equality as well so the eraliest element to be pushed is popped
-			if (_prio <= prio)
+			// This condition tests for equality as well so the earliest element to be pushed is popped
+			if (_prio.prio < prio.prio || (_prio.prio == prio.prio && _prio.order < prio.order))
 			{
 				found = next;
 				parent_found = &node;
@@ -200,7 +215,11 @@ public:
 		if (cpu_flag::again - found->state)
 		{
 			atomic_storage<T>::release(*parent_found, found->next_cpu);
-			atomic_storage<T>::release(found->next_cpu, nullptr);
+
+			if (modify_node)
+			{
+				atomic_storage<T>::release(found->next_cpu, nullptr);
+			}
 		}
 
 		return found;
@@ -211,6 +230,11 @@ public:
 	{
 		atomic_storage<T>::release(object->next_cpu, first);
 		atomic_storage<T>::release(first, object);
+
+		object->prio.atomic_op([order = ++g_priority_order_tag](std::common_type_t<decltype(std::declval<T>()->prio.load())>& prio)
+		{
+			prio.order = order;
+		});
 	}
 
 private:
@@ -413,9 +437,15 @@ public:
 
 			if (cpu != &g_to_notify)
 			{
-				// Note: by the time of notification the thread could have been deallocated which is why the direct function is used
-				// TODO: Pass a narrower mask
-				atomic_wait_engine::notify_one(cpu, 4, atomic_wait::default_mask<atomic_bs_t<cpu_flag>>);
+				if (cpu >= vm::g_reservations && cpu <= vm::g_reservations + (std::size(vm::g_reservations) - 1))
+				{
+					atomic_wait_engine::notify_all(cpu);
+				}
+				else
+				{
+					// Note: by the time of notification the thread could have been deallocated which is why the direct function is used
+					atomic_wait_engine::notify_one(cpu);
+				}
 			}
 		}
 
@@ -446,7 +476,8 @@ public:
 
 				// While IDM mutex is still locked (this function assumes so) check if the notification is still needed
 				// Pending flag is meant for forced notification (if the CPU really has pending work it can restore the flag in theory)
-				if (cpu != &g_to_notify && static_cast<const decltype(cpu_thread::state)*>(cpu)->none_of(cpu_flag::signal + cpu_flag::pending))
+				// Disabled to allow reservation notifications from here
+				if (false && cpu != &g_to_notify && static_cast<const decltype(cpu_thread::state)*>(cpu)->none_of(cpu_flag::signal + cpu_flag::pending))
 				{
 					// Omit it (this is a void pointer, it can hold anything)
 					cpu = &g_to_notify;
@@ -462,6 +493,9 @@ public:
 
 	// Scheduler mutex
 	static shared_mutex g_mutex;
+
+	// Proirity tags
+	static atomic_t<u64> g_priority_order_tag;
 
 private:
 	// Pending list of threads to run

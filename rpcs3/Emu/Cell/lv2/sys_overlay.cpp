@@ -4,6 +4,7 @@
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
+#include "Emu/system_config.h"
 #include "Crypto/unself.h"
 #include "Crypto/unedat.h"
 #include "Loader/ELF.h"
@@ -12,9 +13,9 @@
 #include "sys_overlay.h"
 #include "sys_fs.h"
 
-extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, const std::string& path, s64 file_offset, utils::serial* ar = nullptr);
+extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, bool virtual_load, const std::string& path, s64 file_offset, utils::serial* ar = nullptr);
 
-extern bool ppu_initialize(const ppu_module&, bool = false);
+extern bool ppu_initialize(const ppu_module&, bool check_only = false, u64 file_size = 0);
 extern void ppu_finalize(const ppu_module&);
 
 LOG_CHANNEL(sys_overlay);
@@ -35,19 +36,25 @@ static error_code overlay_load_module(vm::ptr<u32> ovlmid, const std::string& vp
 
 	u128 klic = g_fxo->get<loaded_npdrm_keys>().last_key();
 
-	ppu_exec_object obj = decrypt_self(std::move(src), reinterpret_cast<u8*>(&klic));
+	ppu_exec_object obj = decrypt_self(std::move(src), reinterpret_cast<u8*>(&klic), nullptr, true);
 
 	if (obj != elf_error::ok)
 	{
 		return {CELL_ENOEXEC, obj.operator elf_error()};
 	}
 
-	const auto [ovlm, error] = ppu_load_overlay(obj, vfs::get(vpath), file_offset);
+	const auto [ovlm, error] = ppu_load_overlay(obj, false, vfs::get(vpath), file_offset);
 
 	obj.clear();
 
 	if (error)
 	{
+		if (error == CELL_CANCEL + 0u)
+		{
+			// Emulation stopped
+			return {};
+		}
+
 		return error;
 	}
 
@@ -61,11 +68,11 @@ static error_code overlay_load_module(vm::ptr<u32> ovlmid, const std::string& vp
 	return CELL_OK;
 }
 
-fs::file make_file_view(fs::file&&, u64);
+fs::file make_file_view(fs::file&& file, u64 offset, u64 size);
 
 std::shared_ptr<void> lv2_overlay::load(utils::serial& ar)
 {
-	const std::string path = vfs::get(ar.operator std::string());
+	const std::string path = vfs::get(ar.pop<std::string>());
 	const s64 offset = ar;
 
 	std::shared_ptr<lv2_overlay> ovlm;
@@ -75,8 +82,8 @@ std::shared_ptr<void> lv2_overlay::load(utils::serial& ar)
 	if (file)
 	{
 		u128 klic = g_fxo->get<loaded_npdrm_keys>().last_key();
-		file = make_file_view(std::move(file), offset);
-		ovlm = ppu_load_overlay(ppu_exec_object{ decrypt_self(std::move(file), reinterpret_cast<u8*>(&klic)) }, path, 0, &ar).first;
+		file = make_file_view(std::move(file), offset, umax);
+		ovlm = ppu_load_overlay(ppu_exec_object{ decrypt_self(std::move(file), reinterpret_cast<u8*>(&klic)) }, false, path, 0, &ar).first;
 		ensure(ovlm);
 	}
 	else

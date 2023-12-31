@@ -26,6 +26,7 @@ namespace rsx
 		using image_view_type      = typename traits::image_view_type;
 		using image_storage_type   = typename traits::image_storage_type;
 		using texture_format       = typename traits::texture_format;
+		using viewable_image_type  = typename traits::viewable_image_type;
 
 		using predictor_type       = texture_cache_predictor<traits>;
 		using ranged_storage       = rsx::ranged_storage<traits>;
@@ -59,6 +60,7 @@ namespace rsx
 			std::vector<section_storage_type*> sections_to_unprotect; // These sections are to be unpotected and discarded by caller
 			std::vector<section_storage_type*> sections_to_exclude; // These sections are do be excluded from protection manipulation (subtracted from other sections)
 			u32 num_flushable = 0;
+			u32 num_excluded = 0;  // Sections-to-exclude + sections that would have been excluded but are false positives
 			u64 cache_tag = 0;
 
 			address_range fault_range;
@@ -142,6 +144,7 @@ namespace rsx
 			std::vector<copy_region_descriptor> sections_to_copy;
 			texture_channel_remap_t remap;
 			deferred_request_command op = deferred_request_command::nop;
+			u32 external_ref_addr = 0;
 			u16 x = 0;
 			u16 y = 0;
 
@@ -161,6 +164,27 @@ namespace rsx
 			{
 				static_cast<image_section_attributes_t&>(*this) = attr;
 			}
+
+			viewable_image_type as_viewable() const
+			{
+				return static_cast<viewable_image_type>(external_handle);
+			}
+
+			image_resource_type src0() const
+			{
+				if (external_handle)
+				{
+					return external_handle;
+				}
+
+				if (!sections_to_copy.empty())
+				{
+					return sections_to_copy[0].src;
+				}
+
+				// Return typed null
+				return external_handle;
+			}
 		};
 
 		struct sampled_image_descriptor : public sampled_image_descriptor_base
@@ -179,11 +203,16 @@ namespace rsx
 				upload_context = ctx;
 				format_class = ftype;
 				is_cyclic_reference = cyclic_reference;
-				scale_x = scale.width;
-				scale_y = scale.height;
-				scale_z = scale.depth;
 				image_type = type;
 				samples = msaa_samples;
+
+				texcoord_xform.scale[0] = scale.width;
+				texcoord_xform.scale[1] = scale.height;
+				texcoord_xform.scale[2] = scale.depth;
+				texcoord_xform.bias[0] = 0.;
+				texcoord_xform.bias[1] = 0.;
+				texcoord_xform.bias[2] = 0.;
+				texcoord_xform.clamp = false;
 			}
 
 			sampled_image_descriptor(image_resource_type external_handle, deferred_request_command reason,
@@ -196,28 +225,77 @@ namespace rsx
 				image_handle = 0;
 				upload_context = ctx;
 				format_class = ftype;
-				scale_x = scale.width;
-				scale_y = scale.height;
-				scale_z = scale.depth;
 				image_type = type;
+
+				texcoord_xform.scale[0] = scale.width;
+				texcoord_xform.scale[1] = scale.height;
+				texcoord_xform.scale[2] = scale.depth;
+				texcoord_xform.bias[0] = 0.;
+				texcoord_xform.bias[1] = 0.;
+				texcoord_xform.bias[2] = 0.;
+				texcoord_xform.clamp = false;
+			}
+
+			inline bool section_fills_target(const copy_region_descriptor& cpy) const
+			{
+				return cpy.dst_x == 0 && cpy.dst_y == 0 &&
+					cpy.dst_w == external_subresource_desc.width && cpy.dst_h == external_subresource_desc.height;
+			}
+
+			inline bool section_is_transfer_only(const copy_region_descriptor& cpy) const
+			{
+				return cpy.src_w == cpy.dst_w && cpy.src_h == cpy.dst_h;
 			}
 
 			void simplify()
 			{
-				// Optimizations in the straightforward methods copy_image_static and copy_image_dynamic make them preferred over the atlas method
-				if (external_subresource_desc.op == deferred_request_command::atlas_gather &&
-					external_subresource_desc.sections_to_copy.size() == 1)
+				if (external_subresource_desc.op != deferred_request_command::atlas_gather)
 				{
-					// Check if the subresource fills the target, if so, change the command to copy_image_static
-					const auto &cpy = external_subresource_desc.sections_to_copy.front();
-					if (cpy.dst_x == 0 && cpy.dst_y == 0 &&
-						cpy.dst_w == external_subresource_desc.width && cpy.dst_h == external_subresource_desc.height &&
-						cpy.src_w == cpy.dst_w && cpy.src_h == cpy.dst_h)
+					// Only atlas simplification supported for now
+					return;
+				}
+
+				auto& sections = external_subresource_desc.sections_to_copy;
+				if (sections.size() > 1)
+				{
+					// GPU image copies are expensive, cull unnecessary transfers if possible
+					for (auto idx = sections.size() - 1; idx >= 1; idx--)
 					{
+						if (section_fills_target(sections[idx]))
+						{
+							const auto remaining = sections.size() - idx;
+							std::memcpy(
+								sections.data(),
+								&sections[idx],
+								remaining * sizeof(sections[0])
+							);
+							sections.resize(remaining);
+							break;
+						}
+					}
+				}
+
+				// Optimizations in the straightforward methods copy_image_static and copy_image_dynamic make them preferred over the atlas method
+				if (sections.size() == 1 && section_fills_target(sections[0]))
+				{
+					const auto cpy = sections[0];
+					external_subresource_desc.external_ref_addr = cpy.base_addr;
+
+					if (section_is_transfer_only(cpy))
+					{
+						// Change the command to copy_image_static
 						external_subresource_desc.external_handle = cpy.src;
 						external_subresource_desc.x = cpy.src_x;
 						external_subresource_desc.y = cpy.src_y;
+						external_subresource_desc.width = cpy.src_w;
+						external_subresource_desc.height = cpy.src_h;
 						external_subresource_desc.op = deferred_request_command::copy_image_static;
+					}
+					else
+					{
+						// Blit op is a semantic variant of the copy and atlas ops.
+						// We can simply reuse the atlas handler for this for now, but this allows simplification.
+						external_subresource_desc.op = deferred_request_command::blit_image_static;
 					}
 				}
 			}
@@ -377,6 +455,7 @@ namespace rsx
 		atomic_t<u32> m_unavoidable_hard_faults_this_frame = { 0 };
 		atomic_t<u32> m_texture_upload_calls_this_frame = { 0 };
 		atomic_t<u32> m_texture_upload_misses_this_frame = { 0 };
+		atomic_t<u32> m_texture_copies_ellided_this_frame = { 0 };
 		static const u32 m_predict_max_flushes_per_frame = 50; // Above this number the predictions are disabled
 
 		// Invalidation
@@ -609,13 +688,13 @@ namespace rsx
 		{
 			auto protect_ranges = [this](address_range_vector& _set, utils::protection _prot)
 			{
-				u32 count = 0;
+				//u32 count = 0;
 				for (auto &range : _set)
 				{
 					if (range.valid())
 					{
 						rsx::memory_protect(range, _prot);
-						count++;
+						//count++;
 					}
 				}
 				//rsx_log.error("Set protection of %d blocks to 0x%x", count, static_cast<u32>(prot));
@@ -832,7 +911,7 @@ namespace rsx
 			AUDIT(fault_range_in.valid());
 			address_range fault_range = fault_range_in.to_page_range();
 
-			intersecting_set trampled_set = std::move(get_intersecting_set(fault_range));
+			const intersecting_set trampled_set = get_intersecting_set(fault_range);
 
 			thrashed_set result = {};
 			result.cause = cause;
@@ -935,6 +1014,7 @@ namespace rsx
 							// Do not exclude hashed pages from unprotect! They will cause protection holes
 							result.sections_to_exclude.push_back(&tex);
 						}
+						result.num_excluded++;
 						continue;
 					}
 
@@ -1022,7 +1102,7 @@ namespace rsx
 				else
 				{
 					// This is a read and all overlapping sections were RO and were excluded (except for cause == superseded_by_fbo)
-					AUDIT(cause.skip_fbos() || (cause.is_read() && !result.sections_to_exclude.empty()));
+					AUDIT(cause.skip_fbos() || (cause.is_read() && result.num_excluded > 0));
 
 					// We did not handle this violation
 					result.clear_sections();
@@ -1610,13 +1690,18 @@ namespace rsx
 				{
 					sections[n] =
 					{
-						desc.external_handle,
-						surface_transform::coordinate_transform,
-						0,
-						0, static_cast<u16>(desc.slice_h * n),
-						0, 0, n,
-						desc.width, desc.height,
-						desc.width, desc.height
+						.src = desc.external_handle,
+						.xform = surface_transform::coordinate_transform,
+						.level = 0,
+						.src_x = 0,
+						.src_y = static_cast<u16>(desc.slice_h * n),
+						.dst_x = 0,
+						.dst_y = 0,
+						.dst_z = n,
+						.src_w = desc.width,
+						.src_h = desc.height,
+						.dst_w = desc.width,
+						.dst_h = desc.height
 					};
 				}
 
@@ -1636,13 +1721,18 @@ namespace rsx
 				{
 					sections[n] =
 					{
-						desc.external_handle,
-						surface_transform::coordinate_transform,
-						0,
-						0, static_cast<u16>(desc.slice_h * n),
-						0, 0, n,
-						desc.width, desc.height,
-						desc.width, desc.height
+						.src = desc.external_handle,
+						.xform = surface_transform::coordinate_transform,
+						.level = 0,
+						.src_x = 0,
+						.src_y = static_cast<u16>(desc.slice_h * n),
+						.dst_x = 0,
+						.dst_y = 0,
+						.dst_z = n,
+						.src_w = desc.width,
+						.src_h = desc.height,
+						.dst_w = desc.width,
+						.dst_h = desc.height
 					};
 				}
 
@@ -1650,6 +1740,7 @@ namespace rsx
 				break;
 			}
 			case deferred_request_command::atlas_gather:
+			case deferred_request_command::blit_image_static:
 			{
 				result = generate_atlas_from_images(cmd, desc.gcm_format, desc.width, desc.height, desc.sections_to_copy, desc.remap);
 				break;
@@ -1820,7 +1911,7 @@ namespace rsx
 							rsx_log.warning("A texture was found in cache for address 0x%x, but swizzle flag does not match", attr.address);
 							cached_texture->unprotect();
 							cached_texture->set_dirty(true);
-							return {};
+							break;
 						}
 
 						return{ cached_texture->get_view(encoded_remap, remap), cached_texture->get_context(), cached_texture->get_format_class(), scale, cached_texture->get_image_type() };
@@ -1834,7 +1925,7 @@ namespace rsx
 					(
 						std::remove_if(overlapping_locals.begin(), overlapping_locals.end(), [](const auto& e)
 						{
-							return (e->get_context() != rsx::texture_upload_context::blit_engine_dst);
+							return e->is_dirty() || (e->get_context() != rsx::texture_upload_context::blit_engine_dst);
 						}),
 						overlapping_locals.end()
 					);
@@ -1894,6 +1985,17 @@ namespace rsx
 							auto new_attr = attr;
 							new_attr.gcm_format = gcm_format;
 
+							if (last->get_gcm_format() == attr.gcm_format && attr.edge_clamped)
+							{
+								// Clipped view
+								auto viewed_image = last->get_raw_texture();
+								sampled_image_descriptor result = { viewed_image->get_view(encoded_remap, remap), last->get_context(),
+									viewed_image->format_class(), scale, extended_dimension, false, viewed_image->samples() };
+
+								helpers::calculate_sample_clip_parameters(result, position2i(0, 0), size2i(attr.width, attr.height), size2i(normalized_width, last->get_height()));
+								return result;
+							}
+
 							return { last->get_raw_texture(), deferred_request_command::copy_image_static, new_attr, {},
 									last->get_context(), classify_format(gcm_format), scale, extended_dimension, remap };
 						}
@@ -1902,15 +2004,50 @@ namespace rsx
 					auto result = helpers::merge_cache_resources<sampled_image_descriptor>(
 						cmd, overlapping_fbos, overlapping_locals, attr, scale, extended_dimension, encoded_remap, remap, _pool);
 
+					const bool is_simple_subresource_copy =
+						(result.external_subresource_desc.op == deferred_request_command::copy_image_static) ||
+						(result.external_subresource_desc.op == deferred_request_command::copy_image_dynamic) ||
+						(result.external_subresource_desc.op == deferred_request_command::blit_image_static);
+
+					if (attr.edge_clamped &&
+						!g_cfg.video.strict_rendering_mode &&
+						is_simple_subresource_copy &&
+						render_target_format_is_compatible(result.external_subresource_desc.src0(), attr.gcm_format))
+					{
+						if (result.external_subresource_desc.op != deferred_request_command::blit_image_static) [[ likely ]]
+						{
+							helpers::convert_image_copy_to_clip_descriptor(
+								result,
+								position2i(result.external_subresource_desc.x, result.external_subresource_desc.y),
+								size2i(result.external_subresource_desc.width, result.external_subresource_desc.height),
+								size2i(result.external_subresource_desc.external_handle->width(), result.external_subresource_desc.external_handle->height()),
+								encoded_remap, remap, false);
+						}
+						else
+						{
+							helpers::convert_image_blit_to_clip_descriptor(
+								result,
+								encoded_remap,
+								remap,
+								false);
+						}
+
+						if (!!result.ref_address && m_rtts.address_is_bound(result.ref_address))
+						{
+							result.is_cyclic_reference = true;
+
+							auto texptr = ensure(m_rtts.get_surface_at(result.ref_address));
+							insert_texture_barrier(cmd, texptr);
+						}
+
+						return result;
+					}
+
 					if (options.skip_texture_merge)
 					{
-						switch (result.external_subresource_desc.op)
+						if (is_simple_subresource_copy)
 						{
-						case deferred_request_command::copy_image_static:
-						case deferred_request_command::copy_image_dynamic:
 							return result;
-						default:
-							break;
 						}
 
 						return {};
@@ -2136,12 +2273,14 @@ namespace rsx
 				attributes.depth = 1;
 				attributes.height = 1;
 				attributes.slice_h = 1;
+				attributes.edge_clamped = (tex.wrap_s() == rsx::texture_wrap_mode::clamp_to_edge);
 				scale.height = scale.depth = 0.f;
 				subsurface_count = 1;
 				required_surface_height = 1;
 				break;
 			case rsx::texture_dimension_extended::texture_dimension_2d:
 				attributes.depth = 1;
+				attributes.edge_clamped = (tex.wrap_s() == rsx::texture_wrap_mode::clamp_to_edge && tex.wrap_t() == rsx::texture_wrap_mode::clamp_to_edge);
 				scale.depth = 0.f;
 				subsurface_count = options.is_compressed_format? 1 : tex.get_exact_mipmap_count();
 				attributes.slice_h = required_surface_height = attributes.height;
@@ -2193,8 +2332,16 @@ namespace rsx
 					// Deferred reconstruct
 					result.external_subresource_desc.cache_range = lookup_range;
 				}
+				else if (result.texcoord_xform.clamp)
+				{
+					m_texture_copies_ellided_this_frame++;
+				}
 
-				result.ref_address = attributes.address;
+				if (!result.ref_address)
+				{
+					result.ref_address = attributes.address;
+				}
+
 				result.surface_cache_tag = m_rtts.write_tag;
 
 				if (subsurface_count == 1)
@@ -2271,6 +2418,12 @@ namespace rsx
 					result.external_subresource_desc = { 0, deferred_request_command::mipmap_gather, attributes, {}, tex.decoded_remap() };
 					result.format_class = rsx::classify_format(attributes.gcm_format);
 
+					if (result.texcoord_xform.clamp)
+					{
+						// Revert clamp configuration
+						result.pop_texcoord_xform();
+					}
+
 					if (use_upscaling)
 					{
 						// Grab the correct image dimensions from the base mipmap level
@@ -2312,11 +2465,14 @@ namespace rsx
 					texture_upload_context::shader_read, format_class, scale, extended_dimension };
 		}
 
+		// FIXME: This function is way too large and needs an urgent refactor.
 		template <typename surface_store_type, typename blitter_type, typename ...Args>
-		blit_op_result upload_scaled_image(rsx::blit_src_info& src, rsx::blit_dst_info& dst, bool interpolate, commandbuffer_type& cmd, surface_store_type& m_rtts, blitter_type& blitter, Args&&... extras)
+		blit_op_result upload_scaled_image(const rsx::blit_src_info& src_info, const rsx::blit_dst_info& dst_info, bool interpolate, commandbuffer_type& cmd, surface_store_type& m_rtts, blitter_type& blitter, Args&&... extras)
 		{
-			// Since we will have dst in vram, we can 'safely' ignore the swizzle flag
-			// TODO: Verify correct behavior
+			// Local working copy. We may modify the descriptors for optimization purposes
+			auto src = src_info;
+			auto dst = dst_info;
+
 			bool src_is_render_target = false;
 			bool dst_is_render_target = false;
 			const bool dst_is_argb8 = (dst.format == rsx::blit_engine::transfer_destination_format::a8r8g8b8);
@@ -2394,6 +2550,13 @@ namespace rsx
 				typeless_info.flip_horizontal = true;
 				src_address += (src.width - src_w) * src_bpp;
 			}
+
+			const auto is_tiled_mem = [&](const utils::address_range& range)
+			{
+				auto rsxthr = rsx::get_current_renderer();
+				auto region = rsxthr->get_tiled_memory_region(range);
+				return region.tile != nullptr;
+			};
 
 			auto rtt_lookup = [&m_rtts, &cmd, &scale_x, &scale_y, this](u32 address, u32 width, u32 height, u32 pitch, u8 bpp, rsx::flags32_t access, bool allow_clipped) -> typename surface_store_type::surface_overlap_info
 			{
@@ -2477,6 +2640,31 @@ namespace rsx
 				return true;
 			};
 
+			auto validate_fbo_integrity = [&](const utils::address_range& range, bool is_depth_texture)
+			{
+				const bool will_upload = is_depth_texture ? !!g_cfg.video.read_depth_buffer : !!g_cfg.video.read_color_buffers;
+				if (!will_upload)
+				{
+					// Give a pass. The data is lost anyway.
+					return true;
+				}
+
+				const bool should_be_locked = is_depth_texture ? !!g_cfg.video.write_depth_buffer : !!g_cfg.video.write_color_buffers;
+				if (!should_be_locked)
+				{
+					// Data is lost anyway.
+					return true;
+				}
+
+				// Optimal setup. We have ideal conditions presented so we can correctly decide what to do here.
+				const auto section = find_cached_texture(range, { .gcm_format = RSX_GCM_FORMAT_IGNORED }, false, false, false);
+				return section && section->is_locked();
+			};
+
+			// Check tiled mem
+			const auto dst_is_tiled = is_tiled_mem(utils::address_range::start_length(dst_address, dst.pitch * dst.clip_height));
+			const auto src_is_tiled = is_tiled_mem(utils::address_range::start_length(src_address, src.pitch * src.height));
+
 			// Check if src/dst are parts of render targets
 			typename surface_store_type::surface_overlap_info dst_subres;
 			bool use_null_region = false;
@@ -2485,7 +2673,6 @@ namespace rsx
 			// NOTE: Grab the src first as requirements for reading are more strict than requirements for writing
 			auto src_subres = rtt_lookup(src_address, src_w, src_h, src.pitch, src_bpp, surface_access::transfer_read, false);
 			src_is_render_target = src_subres.surface != nullptr;
-
 
 			if (get_location(dst_address) == CELL_GCM_LOCATION_LOCAL)
 			{
@@ -2497,10 +2684,26 @@ namespace rsx
 			else
 			{
 				// Surface exists in local memory.
-				use_null_region = (is_copy_op && !is_format_convert);
+				use_null_region = (is_copy_op && !is_format_convert && !src_is_tiled);
 
 				// Invalidate surfaces in range. Sample tests should catch overlaps in theory.
 				m_rtts.invalidate_range(utils::address_range::start_length(dst_address, dst.pitch* dst_h));
+			}
+
+			// FBO re-validation. It is common for GPU and CPU data to desync as we do not have a way to share memory pages directly between the two (in most setups)
+			// To avoid losing data, we need to do some gymnastics
+			if (src_is_render_target && !validate_fbo_integrity(src_subres.surface->get_memory_range(), src_subres.is_depth))
+			{
+				src_is_render_target = false;
+				src_subres.surface = nullptr;
+			}
+
+			if (dst_is_render_target && !validate_fbo_integrity(dst_subres.surface->get_memory_range(), dst_subres.is_depth))
+			{
+				// This is a lot more serious that the src case. We have to signal surface cache to reload the memory and discard what we have GPU-side.
+				// Do the transfer CPU side and we should eventually "read" the data on RCB/RDB barrier.
+				dst_subres.surface->invalidate_GPU_memory();
+				return false;
 			}
 
 			if (src_is_render_target)
@@ -2533,7 +2736,7 @@ namespace rsx
 			else
 			{
 				// Determine whether to perform this transfer on CPU or GPU (src data may not be graphical)
-				const bool is_trivial_copy = is_copy_op && !is_format_convert && !dst.swizzled;
+				const bool is_trivial_copy = is_copy_op && !is_format_convert && !dst.swizzled && !dst_is_tiled && !src_is_tiled;
 				const bool is_block_transfer = (dst_w == src_w && dst_h == src_h && (src.pitch == dst.pitch || src_h == 1));
 				const bool is_mirror_op = (dst.scale_x < 0.f || dst.scale_y < 0.f);
 
@@ -2563,7 +2766,7 @@ namespace rsx
 						skip_if_collision_exists = true;
 					}
 
-					if (!g_cfg.video.use_gpu_texture_scaling)
+					if (!g_cfg.video.use_gpu_texture_scaling && !dst_is_tiled && !src_is_tiled)
 					{
 						if (dst.swizzled)
 						{
@@ -3031,7 +3234,7 @@ namespace rsx
 					{
 						cached_dest = create_new_texture(cmd, rsx_range, dst_dimensions.width, dst_dimensions.height, 1, 1, dst.pitch,
 							preferred_dst_format, rsx::texture_upload_context::blit_engine_dst, rsx::texture_dimension_extended::texture_dimension_2d,
-							false, channel_order, 0);
+							dst.swizzled, channel_order, 0);
 					}
 					else
 					{
@@ -3052,7 +3255,7 @@ namespace rsx
 
 						cached_dest = upload_image_from_cpu(cmd, rsx_range, dst_dimensions.width, dst_dimensions.height, 1, 1, dst.pitch,
 							preferred_dst_format, rsx::texture_upload_context::blit_engine_dst, subresource_layout,
-							rsx::texture_dimension_extended::texture_dimension_2d, false);
+							rsx::texture_dimension_extended::texture_dimension_2d, dst.swizzled);
 
 						set_component_order(*cached_dest, preferred_dst_format, channel_order);
 					}
@@ -3084,7 +3287,7 @@ namespace rsx
 				update_cache_tag();
 
 				// Set swizzle flag
-				cached_dest->set_swizzled(raster_type == rsx::surface_raster_type::swizzle);
+				cached_dest->set_swizzled(raster_type == rsx::surface_raster_type::swizzle || dst.swizzled);
 			}
 			else
 			{
@@ -3113,7 +3316,13 @@ namespace rsx
 						else
 						{
 							// Unlikely situation, but the only one which would allow re-upload from CPU to overlap this section.
-							ensure(!found->is_flushable());
+							if (found->is_flushable())
+							{
+								// Technically this is possible in games that may change surface pitch at random (insomniac engine)
+								// FIXME: A proper fix includes pitch conversion and surface inheritance chains between surface targets and blit targets (unified cache) which is a very long-term thing.
+								const auto range = found->get_section_range();
+								rsx_log.error("[Pitch Mismatch] GPU-resident data at 0x%x->0x%x is discarded due to surface cache data clobbering it.", range.start, range.end);
+							}
 							found->discard(true);
 						}
 					}
@@ -3283,6 +3492,7 @@ namespace rsx
 			m_unavoidable_hard_faults_this_frame.store(0u);
 			m_texture_upload_calls_this_frame.store(0u);
 			m_texture_upload_misses_this_frame.store(0u);
+			m_texture_copies_ellided_this_frame.store(0u);
 		}
 
 		void on_flush()
@@ -3364,6 +3574,11 @@ namespace rsx
 		u32 get_texture_upload_miss_percentage() const
 		{
 			return (m_texture_upload_calls_this_frame)? (m_texture_upload_misses_this_frame * 100 / m_texture_upload_calls_this_frame) : 0;
+		}
+
+		u32 get_texture_copies_ellided_this_frame() const
+		{
+			return m_texture_copies_ellided_this_frame;
 		}
 	};
 }

@@ -21,9 +21,10 @@ std::string wchar_to_utf8(std::wstring_view src)
 {
 #ifdef _WIN32
 	std::string utf8_string;
-	const auto tmp_size = WideCharToMultiByte(CP_UTF8, 0, src.data(), src.size(), nullptr, 0, nullptr, nullptr);
+	const int size = ::narrow<int>(src.size());
+	const auto tmp_size = WideCharToMultiByte(CP_UTF8, 0, src.data(), size, nullptr, 0, nullptr, nullptr);
 	utf8_string.resize(tmp_size);
-	WideCharToMultiByte(CP_UTF8, 0, src.data(), src.size(), utf8_string.data(), tmp_size, nullptr, nullptr);
+	WideCharToMultiByte(CP_UTF8, 0, src.data(), size, utf8_string.data(), tmp_size, nullptr, nullptr);
 	return utf8_string;
 #else
 	std::wstring_convert<std::codecvt_utf8<wchar_t>, wchar_t> converter{};
@@ -31,6 +32,13 @@ std::string wchar_to_utf8(std::wstring_view src)
 #endif
 }
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
 std::string utf16_to_utf8(std::u16string_view src)
 {
 	std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> converter{};
@@ -42,14 +50,20 @@ std::u16string utf8_to_utf16(std::string_view src)
 	std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> converter{};
 	return converter.from_bytes(src.data());
 }
+#ifdef _MSC_VER
+#pragma warning(pop)
+#else
+#pragma GCC diagnostic pop
+#endif
 
 std::wstring utf8_to_wchar(std::string_view src)
 {
 #ifdef _WIN32
 	std::wstring wchar_string;
-	const auto tmp_size = MultiByteToWideChar(CP_UTF8, 0, src.data(), src.size(), nullptr, 0);
+	const int size = ::narrow<int>(src.size());
+	const auto tmp_size = MultiByteToWideChar(CP_UTF8, 0, src.data(), size, nullptr, 0);
 	wchar_string.resize(tmp_size);
-	MultiByteToWideChar(CP_UTF8, 0, src.data(), src.size(), wchar_string.data(), tmp_size);
+	MultiByteToWideChar(CP_UTF8, 0, src.data(), size, wchar_string.data(), tmp_size);
 	return wchar_string;
 #else
 	std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> converter{};
@@ -63,7 +77,7 @@ std::string fmt::win_error_to_string(unsigned long error, void* module_handle)
 	std::string message;
 	LPWSTR message_buffer = nullptr;
 	if (FormatMessageW((module_handle ? FORMAT_MESSAGE_FROM_HMODULE : FORMAT_MESSAGE_FROM_SYSTEM) | FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_IGNORE_INSERTS,
-			module_handle, error, 0, (LPWSTR)&message_buffer, 0, nullptr))
+			module_handle, error, 0, reinterpret_cast<LPWSTR>(&message_buffer), 0, nullptr))
 	{
 		message = fmt::format("%s (0x%x)", fmt::trim(wchar_to_utf8(message_buffer), " \t\n\r\f\v"), error);
 	}
@@ -221,16 +235,23 @@ void fmt_class_string<fmt::buf_to_hexstring>::format(std::string& out, u64 arg)
 	const std::vector<u8> buf(_arg.buf, _arg.buf + _arg.len);
 	out.reserve(out.size() + (buf.size() * 3));
 	static constexpr char hex[16] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+	const bool use_linebreak = _arg.line_length > 0;
 
 	for (usz index = 0; index < buf.size(); index++)
 	{
+		if (index > 0)
+		{
+			if (use_linebreak && (index % _arg.line_length) == 0)
+				out += '\n';
+			else
+				out += ' ';
+		}
+
+		if (_arg.with_prefix)
+			out += "0x";
+
 		out += hex[buf[index] >> 4];
 		out += hex[buf[index] & 15];
-
-		if (((index + 1) % 16) == 0)
-			out += '\n';
-		else
-			out += ' ';
 	}
 }
 
@@ -589,7 +610,7 @@ std::vector<std::string> fmt::split(std::string_view source, std::initializer_li
 	return result;
 }
 
-std::string fmt::trim(const std::string& source, const std::string& values)
+std::string fmt::trim(const std::string& source, std::string_view values)
 {
 	usz begin = source.find_first_not_of(values);
 
@@ -599,7 +620,13 @@ std::string fmt::trim(const std::string& source, const std::string& values)
 	return source.substr(begin, source.find_last_not_of(values) + 1);
 }
 
-std::string fmt::to_upper(const std::string& string)
+void fmt::trim_back(std::string& source, std::string_view values)
+{
+	const usz index = source.find_last_not_of(values);
+	source.resize(index + 1);
+}
+
+std::string fmt::to_upper(std::string_view string)
 {
 	std::string result;
 	result.resize(string.size());
@@ -607,7 +634,7 @@ std::string fmt::to_upper(const std::string& string)
 	return result;
 }
 
-std::string fmt::to_lower(const std::string& string)
+std::string fmt::to_lower(std::string_view string)
 {
 	std::string result;
 	result.resize(string.size());

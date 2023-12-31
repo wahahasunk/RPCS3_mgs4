@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <functional>
 
 #include "util/types.hpp"
 #include "util/yaml.hpp"
@@ -51,14 +52,16 @@ enum class patch_type
 	bd64, // be64 with data hint (non-code)
 	bef32,
 	bef64,
+	bp_exec, // Execution Breakpoint 
 	utf8, // Text of string (not null-terminated automatically)
+	c_utf8, // Text of string (null-terminated automatically)
 	move_file, // Move file
 	hide_file, // Hide file
 };
 
 static constexpr bool patch_type_uses_hex_offset(patch_type type)
 {
-	return type >= patch_type::alloc && type <= patch_type::utf8;
+	return type >= patch_type::alloc && type <= patch_type::c_utf8;
 }
 
 enum class patch_configurable_type
@@ -212,7 +215,7 @@ public:
 	void append_title_patches(const std::string& title_id);
 
 	// Apply patch (returns the number of entries applied)
-	std::basic_string<u32> apply(const std::string& name, u8* dst, u32 filesz = -1, u32 min_addr = 0);
+	std::basic_string<u32> apply(const std::string& name, std::function<u8*(u32, u32)> mem_translate, u32 filesz = -1, u32 min_addr = 0);
 
 	// Deallocate memory used by patches
 	void unload(const std::string& name);

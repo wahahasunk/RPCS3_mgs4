@@ -2,6 +2,7 @@
 #include "ds3_pad_handler.h"
 #include "ds4_pad_handler.h"
 #include "dualsense_pad_handler.h"
+#include "skateboard_pad_handler.h"
 #include "util/logs.hpp"
 #include "Utilities/Timer.h"
 #include "Emu/System.h"
@@ -198,7 +199,7 @@ void hid_pad_handler<Device>::update_devices()
 			}
 			else
 			{
-				hid_log.warning("%s adding device: vid=N/A, pid=N/A, path='%s'", m_type, path);
+				hid_log.warning("%s adding device: vid=N/A, pid=N/A, path='%s', error='%s'", m_type, path, hid_error(dev));
 			}
 
 			check_add_device(dev, path, m_enumerated_serials[path]);
@@ -214,7 +215,7 @@ void hid_pad_handler<Device>::update_devices()
 	{
 		hid_log.error("One or more %s pads were detected but couldn't be interacted with directly", m_type);
 #if defined(_WIN32) || defined(__linux__)
-		hid_log.error("Check https://wiki.rpcs3.net/index.php?title=Help:Controller_Configuration for intructions on how to solve this issue");
+		hid_log.error("Check https://wiki.rpcs3.net/index.php?title=Help:Controller_Configuration for instructions on how to solve this issue");
 #endif
 	}
 	else
@@ -267,3 +268,4 @@ u32 hid_pad_handler<Device>::get_battery_color(u8 battery_level, u32 brightness)
 template class hid_pad_handler<ds3_device>;
 template class hid_pad_handler<DS4Device>;
 template class hid_pad_handler<DualSenseDevice>;
+template class hid_pad_handler<skateboard_device>;

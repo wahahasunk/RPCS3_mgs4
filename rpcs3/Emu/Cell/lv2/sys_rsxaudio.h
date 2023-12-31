@@ -5,6 +5,7 @@
 #include "Utilities/simple_ringbuf.h"
 #include "Utilities/transactional_storage.h"
 #include "Utilities/cond.h"
+#include "Emu/system_config_types.h"
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Audio/AudioDumper.h"
@@ -160,14 +161,13 @@ struct lv2_rsxaudio final : lv2_obj
 
 	vm::addr_t shmem{};
 
-	std::array<std::weak_ptr<lv2_event_queue>, SYS_RSXAUDIO_PORT_CNT> event_queue{};
+	std::array<std::shared_ptr<lv2_event_queue>, SYS_RSXAUDIO_PORT_CNT> event_queue{};
 
 	// lv2 uses port memory addresses for their names
 	static constexpr std::array<u64, SYS_RSXAUDIO_PORT_CNT> event_port_name{ 0x8000000000400100, 0x8000000000400200, 0x8000000000400300 };
 
-	lv2_rsxaudio()
-	{
-	}
+	lv2_rsxaudio() noexcept = default;
+	lv2_rsxaudio(utils::serial& ar) noexcept;	void save(utils::serial& ar);
 
 	void page_lock()
 	{
@@ -458,7 +458,12 @@ public:
 
 	void update_emu_cfg();
 
+	u32 get_sample_rate() const;
+	u8 get_channel_count() const;
+
 	static constexpr auto thread_name = "RsxAudio Backend Thread"sv;
+
+	SAVESTATE_INIT_POS(8.91); // Depends on audio_out_configuration
 
 private:
 
@@ -525,7 +530,7 @@ private:
 	u64 start_time = get_system_time();
 	u64 time_period_idx = 1;
 
-	emu_audio_cfg new_emu_cfg{get_emu_cfg()};
+	emu_audio_cfg new_emu_cfg{};
 	bool emu_cfg_changed = true;
 
 	rsxaudio_state new_ra_state{};

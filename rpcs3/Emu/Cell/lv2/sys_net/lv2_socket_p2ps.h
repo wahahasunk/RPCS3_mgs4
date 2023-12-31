@@ -50,7 +50,6 @@ enum p2ps_tcp_flags : u8
 	CWR = (1 << 7),
 };
 
-void initialize_tcp_timeout_monitor();
 u16 u2s_tcp_checksum(const le_t<u16>* buffer, usz size);
 std::vector<u8> generate_u2s_packet(const p2ps_encapsulated_tcp& header, const u8* data, const u32 datasize);
 
@@ -66,7 +65,7 @@ public:
 	void set_status(p2ps_stream_status new_status);
 	bool handle_connected(p2ps_encapsulated_tcp* tcp_header, u8* data, ::sockaddr_storage* op_addr);
 	bool handle_listening(p2ps_encapsulated_tcp* tcp_header, u8* data, ::sockaddr_storage* op_addr);
-	void send_u2s_packet(std::vector<u8> data, const ::sockaddr_in* dst, u32 seq, bool require_ack);
+	void send_u2s_packet(std::vector<u8> data, const ::sockaddr_in* dst, u64 seq, bool require_ack);
 
 	std::tuple<bool, s32, std::shared_ptr<lv2_socket>, sys_net_sockaddr> accept(bool is_lock = true) override;
 	s32 bind(const sys_net_sockaddr& addr) override;

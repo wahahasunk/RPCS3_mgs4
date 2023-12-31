@@ -1,19 +1,21 @@
 #pragma once
 
-#ifdef _WIN32
-#include <QWinTHumbnailToolbar>
-#include <QWinTHumbnailToolbutton>
+#ifdef HAS_QT_WIN_STUFF
+#include <QWinThumbnailToolBar>
+#include <QWinThumbnailToolButton>
 #endif
 
 #include <QActionGroup>
 #include <QMainWindow>
 #include <QIcon>
+#include <QList>
+#include <QUrl>
 #include <QMimeData>
 
 #include "update_manager.h"
 #include "settings.h"
 #include "shortcut_handler.h"
-#include "Emu/System.h"
+#include "Emu/config_mode.h"
 
 #include <memory>
 
@@ -48,6 +50,7 @@ class main_window : public QMainWindow
 
 	bool m_is_list_mode = true;
 	bool m_save_slider_pos = false;
+	bool m_requested_show_logs_on_exit = false;
 	int m_other_slider_pos = 0;
 
 	QIcon m_app_icon;
@@ -57,7 +60,7 @@ class main_window : public QMainWindow
 	QIcon m_icon_fullscreen_on;
 	QIcon m_icon_fullscreen_off;
 
-#ifdef _WIN32
+#ifdef HAS_QT_WIN_STUFF
 	QIcon m_icon_thumb_play;
 	QIcon m_icon_thumb_pause;
 	QIcon m_icon_thumb_stop;
@@ -71,9 +74,8 @@ class main_window : public QMainWindow
 	enum class drop_type
 	{
 		drop_error,
-		drop_pkg,
+		drop_rap_edat_pkg,
 		drop_pup,
-		drop_rap_edat,
 		drop_psf,
 		drop_dir,
 		drop_game,
@@ -86,14 +88,15 @@ public:
 	bool Init(bool with_cli_boot);
 	QIcon GetAppIcon() const;
 	bool OnMissingFw();
-	void InstallPackages(QStringList file_paths = QStringList());
+	bool InstallPackages(QStringList file_paths = {}, bool from_boot = false);
 	void InstallPup(QString file_path = "");
 
 Q_SIGNALS:
 	void RequestLanguageChange(const QString& language);
 	void RequestGlobalStylesheetChange();
-	void RequestTrophyManagerRepaint();
+	void RequestDialogRepaint();
 	void NotifyEmuSettingsChange();
+	void NotifyWindowCloseEvent(bool closed);
 
 public Q_SLOTS:
 	void OnEmuStop();
@@ -103,13 +106,14 @@ public Q_SLOTS:
 	void OnEmuReady() const;
 	void OnEnableDiscEject(bool enabled) const;
 	void OnEnableDiscInsert(bool enabled) const;
+	void OnAddBreakpoint(u32 addr) const;
 
 	void RepaintGui();
 	void RetranslateUI(const QStringList& language_codes, const QString& language);
 
 private Q_SLOTS:
 	void OnPlayOrPause();
-	void Boot(const std::string& path, const std::string& title_id = "", bool direct = false, bool add_only = false, cfg_mode config_mode = cfg_mode::custom, const std::string& config_path = "");
+	void Boot(const std::string& path, const std::string& title_id = "", bool direct = false, bool refresh_list = false, cfg_mode config_mode = cfg_mode::custom, const std::string& config_path = "");
 	void BootElf();
 	void BootTest();
 	void BootGame();
@@ -120,7 +124,6 @@ private Q_SLOTS:
 	static void show_boot_error(game_boot_result status);
 
 	void SaveWindowState() const;
-	void ConfigureGuiFromSettings();
 	void SetIconSizeActions(int idx) const;
 	void ResizeIcons(int index);
 
@@ -139,6 +142,7 @@ protected:
 	void dragLeaveEvent(QDragLeaveEvent* event) override;
 
 private:
+	void ConfigureGuiFromSettings();
 	void RepaintToolBarIcons();
 	void RepaintThumbnailIcons();
 	void CreateActions();
@@ -146,10 +150,11 @@ private:
 	void CreateDockWindows();
 	void EnableMenus(bool enabled) const;
 	void ShowTitleBars(bool show) const;
+	void ShowOptionalGamePreparations(const QString& title, const QString& message, std::map<std::string, QString> game_path);
 
 	static bool InstallFileInExData(const std::string& extension, const QString& path, const std::string& filename);
 
-	void HandlePackageInstallation(QStringList file_paths);
+	bool HandlePackageInstallation(QStringList file_paths, bool from_boot);
 
 	void HandlePupInstallation(const QString& file_path, const QString& dir_path = "");
 	void ExtractPup();
@@ -157,14 +162,18 @@ private:
 	void ExtractTar();
 	void ExtractMSELF();
 
-	static drop_type IsValidFile(const QMimeData& md, QStringList* drop_paths = nullptr);
-	static void AddGamesFromDir(const QString& path);
+	QList<QUrl> m_drop_file_url_list;
+	u64 m_drop_file_timestamp = umax;
+	drop_type m_drop_file_cached_drop_type = drop_type::drop_error;
+	drop_type IsValidFile(const QMimeData& md, QStringList* drop_paths = nullptr);
+	void AddGamesFromDirs(QStringList&& paths);
 
 	QAction* CreateRecentAction(const q_string_pair& entry, const uint& sc_idx);
 	void BootRecentAction(const QAction* act);
 	void AddRecentAction(const q_string_pair& entry);
 
 	void UpdateLanguageActions(const QStringList& language_codes, const QString& language);
+	void UpdateFilterActions();
 
 	static QString GetCurrentTitle();
 

@@ -12,8 +12,8 @@ LOG_CHANNEL(sys_lwmutex);
 
 lv2_lwmutex::lv2_lwmutex(utils::serial& ar)
 	: protocol(ar)
-	, control(ar.operator decltype(control)())
-	, name(ar.operator be_t<u64>())
+	, control(ar.pop<decltype(control)>())
+	, name(ar.pop<be_t<u64>>())
 {
 	ar(lv2_control.raw().signaled);
 }
@@ -27,7 +27,7 @@ error_code _sys_lwmutex_create(ppu_thread& ppu, vm::ptr<u32> lwmutex_id, u32 pro
 {
 	ppu.state += cpu_flag::wait;
 
-	sys_lwmutex.trace(u8"_sys_lwmutex_create(lwmutex_id=*0x%x, protocol=0x%x, control=*0x%x, has_name=0x%x, name=0x%llx (“%s”))", lwmutex_id, protocol, control, has_name, name, lv2_obj::name64(std::bit_cast<be_t<u64>>(name)));
+	sys_lwmutex.trace(u8"_sys_lwmutex_create(lwmutex_id=*0x%x, protocol=0x%x, control=*0x%x, has_name=0x%x, name=0x%llx (“%s”))", lwmutex_id, protocol, control, has_name, name, lv2_obj::name_64{std::bit_cast<be_t<u64>>(name)});
 
 	if (protocol != SYS_SYNC_FIFO && protocol != SYS_SYNC_RETRY && protocol != SYS_SYNC_PRIORITY)
 	{
@@ -236,12 +236,38 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 
 				std::lock_guard lock(mutex->mutex);
 
-				if (!mutex->unqueue(mutex->lv2_control.raw().sq, &ppu))
+				bool success = false;
+
+				mutex->lv2_control.fetch_op([&](lv2_lwmutex::control_data_t& data)
 				{
-					break;
+					success = false;
+
+					ppu_thread* sq = static_cast<ppu_thread*>(data.sq);
+
+					const bool retval = &ppu == sq;
+
+					if (!mutex->unqueue<false>(sq, &ppu))
+					{
+						return false;
+					}
+
+					success = true;
+
+					if (!retval)
+					{
+						return false;
+					}
+
+					data.sq = sq;
+					return true;
+				});
+
+				if (success)
+				{
+					ppu.next_cpu = nullptr;
+					ppu.gpr[3] = CELL_ETIMEDOUT;
 				}
 
-				ppu.gpr[3] = CELL_ETIMEDOUT;
 				break;
 			}
 		}

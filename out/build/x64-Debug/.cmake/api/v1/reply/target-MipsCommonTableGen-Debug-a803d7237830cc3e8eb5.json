@@ -1,0 +1,208 @@
+{
+	"backtrace" : 2,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_custom_target",
+			"add_public_tablegen_target",
+			"add_custom_command",
+			"tablegen",
+			"add_dependencies"
+		],
+		"files" : 
+		[
+			"llvm/cmake/modules/TableGen.cmake",
+			"llvm/lib/Target/Mips/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 1,
+				"file" : 1,
+				"line" : 20,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 125,
+				"parent" : 1
+			},
+			{
+				"command" : 3,
+				"file" : 1,
+				"line" : 5,
+				"parent" : 0
+			},
+			{
+				"command" : 2,
+				"file" : 0,
+				"line" : 95,
+				"parent" : 3
+			},
+			{
+				"command" : 4,
+				"file" : 0,
+				"line" : 128,
+				"parent" : 1
+			}
+		]
+	},
+	"dependencies" : 
+	[
+		{
+			"backtrace" : 4,
+			"id" : "llvm-tblgen::@3d7453e908ff33c4876e"
+		},
+		{
+			"backtrace" : 5,
+			"id" : "intrinsics_gen::@cacc3f1edf697578e803"
+		}
+	],
+	"folder" : 
+	{
+		"name" : "Tablegenning"
+	},
+	"id" : "MipsCommonTableGen::@c504590208e60874bdfa",
+	"name" : "MipsCommonTableGen",
+	"paths" : 
+	{
+		"build" : "3rdparty/llvm_build/lib/Target/Mips",
+		"source" : "llvm/lib/Target/Mips"
+	},
+	"sourceGroups" : 
+	[
+		{
+			"name" : "",
+			"sourceIndexes" : 
+			[
+				0
+			]
+		},
+		{
+			"name" : "CMake Rules",
+			"sourceIndexes" : 
+			[
+				1,
+				2,
+				3,
+				4,
+				5,
+				6,
+				7,
+				8,
+				9,
+				10,
+				11,
+				12,
+				13,
+				14,
+				15
+			]
+		}
+	],
+	"sources" : 
+	[
+		{
+			"backtrace" : 2,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/CMakeFiles/MipsCommonTableGen",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/CMakeFiles/MipsCommonTableGen.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenAsmMatcher.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenAsmWriter.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenCallingConv.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenDAGISel.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenDisassemblerTables.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenExegesis.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenFastISel.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenGlobalISel.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenInstrInfo.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenMCCodeEmitter.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenMCPseudoLowering.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenRegisterBank.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenRegisterInfo.inc.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Mips/MipsGenSubtargetInfo.inc.rule",
+			"sourceGroupIndex" : 1
+		}
+	],
+	"type" : "UTILITY"
+}

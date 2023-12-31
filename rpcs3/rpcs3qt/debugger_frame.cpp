@@ -2,7 +2,7 @@
 #include "register_editor_dialog.h"
 #include "instruction_editor_dialog.h"
 #include "memory_viewer_panel.h"
-#include "memory_string_searcher.h"
+#include "elf_memory_dumping_dialog.h"
 #include "gui_settings.h"
 #include "debugger_list.h"
 #include "breakpoint_list.h"
@@ -15,6 +15,7 @@
 #include "Emu/IdManager.h"
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/RSX/RSXDisAsm.h"
+#include "Emu/Cell/PPUAnalyser.h"
 #include "Emu/Cell/PPUDisAsm.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/SPUDisAsm.h"
@@ -24,7 +25,6 @@
 
 #include <QKeyEvent>
 #include <QScrollBar>
-#include <QApplication>
 #include <QFontDatabase>
 #include <QCompleter>
 #include <QVBoxLayout>
@@ -40,6 +40,8 @@ constexpr auto qstr = QString::fromStdString;
 constexpr auto s_pause_flags = cpu_flag::dbg_pause + cpu_flag::dbg_global_pause;
 
 extern atomic_t<bool> g_debugger_pause_all_threads_on_bp;
+
+extern const ppu_decoder<ppu_itype> g_ppu_itype;
 
 extern bool is_using_interpreter(u32 id_type)
 {
@@ -99,6 +101,7 @@ debugger_frame::debugger_frame(std::shared_ptr<gui_settings> gui_settings, QWidg
 	m_choice_units->completer()->setCompletionMode(QCompleter::PopupCompletion);
 	m_choice_units->completer()->setMaxVisibleItems(30);
 	m_choice_units->completer()->setFilterMode(Qt::MatchContains);
+	m_choice_units->installEventFilter(this);
 
 	m_go_to_addr = new QPushButton(tr("Go To Address"), this);
 	m_go_to_pc = new QPushButton(tr("Go To PC"), this);
@@ -119,13 +122,13 @@ debugger_frame::debugger_frame(std::shared_ptr<gui_settings> gui_settings, QWidg
 	hbox_b_main->addStretch();
 
 	// Misc state
-	m_misc_state = new QTextEdit(this);
-	m_misc_state->setLineWrapMode(QTextEdit::NoWrap);
+	m_misc_state = new QPlainTextEdit(this);
+	m_misc_state->setLineWrapMode(QPlainTextEdit::NoWrap);
 	m_misc_state->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
 
 	// Registers
-	m_regs = new QTextEdit(this);
-	m_regs->setLineWrapMode(QTextEdit::NoWrap);
+	m_regs = new QPlainTextEdit(this);
+	m_regs->setLineWrapMode(QPlainTextEdit::NoWrap);
 	m_regs->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
 
 	m_debugger_list->setFont(m_mono);
@@ -196,10 +199,12 @@ void debugger_frame::ChangeColors() const
 {
 	if (m_debugger_list)
 	{
-		m_debugger_list->m_color_bp = m_breakpoint_list->m_color_bp = gui::utils::get_label_color("debugger_frame_breakpoint", QPalette::Window);
-		m_debugger_list->m_color_pc = gui::utils::get_label_color("debugger_frame_pc", QPalette::Window);
-		m_debugger_list->m_text_color_bp = m_breakpoint_list->m_text_color_bp = gui::utils::get_label_color("debugger_frame_breakpoint");
-		m_debugger_list->m_text_color_pc = gui::utils::get_label_color("debugger_frame_pc");
+		const QColor color = gui::utils::get_foreground_color();
+
+		m_debugger_list->m_color_bp = m_breakpoint_list->m_color_bp = gui::utils::get_label_color("debugger_frame_breakpoint", Qt::yellow, Qt::darkYellow, QPalette::Window);
+		m_debugger_list->m_color_pc = gui::utils::get_label_color("debugger_frame_pc", Qt::green, Qt::darkGreen, QPalette::Window);
+		m_debugger_list->m_text_color_bp = m_breakpoint_list->m_text_color_bp = gui::utils::get_label_color("debugger_frame_breakpoint", color, color);
+		m_debugger_list->m_text_color_pc = gui::utils::get_label_color("debugger_frame_pc", color, color);
 	}
 }
 
@@ -209,12 +214,27 @@ bool debugger_frame::eventFilter(QObject* object, QEvent* event)
 	if (object == m_debugger_list && event->type() == QEvent::KeyPress)
 	{
 		keyPressEvent(static_cast<QKeyEvent*>(event));
+		event->accept(); // Restore accepted state
+		return false;
 	}
+
+	if (object == m_choice_units && event->type() == QEvent::FocusOut)
+	{
+		if (int index = m_choice_units->currentIndex(); index >= 0)
+		{
+			// Restore item text automatically on focus-out after search
+			m_choice_units->setCurrentText(m_choice_units->itemText(index));
+		}
+	}
+
 	return false;
 }
 
 void debugger_frame::closeEvent(QCloseEvent* event)
 {
+	SaveSettings();
+	m_gui_settings->sync();
+
 	QDockWidget::closeEvent(event);
 	Q_EMIT DebugFrameClosed();
 }
@@ -261,13 +281,14 @@ void debugger_frame::open_breakpoints_settings()
 	hbox_layout->addWidget(button_ok);
 	dlg->setLayout(hbox_layout);
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
-	dlg->exec();
+	dlg->open();
 }
 
 void debugger_frame::keyPressEvent(QKeyEvent* event)
 {
 	if (!isActiveWindow())
 	{
+		event->ignore();
 		return;
 	}
 
@@ -279,7 +300,10 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 	case Qt::Key_F1:
 	{
 		if (event->isAutoRepeat())
+		{
+			event->ignore();
 			return;
+		}
 
 		QDialog* dlg = new QDialog(this);
 		dlg->setAttribute(Qt::WA_DeleteOnClose);
@@ -288,8 +312,10 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 		QLabel* l = new QLabel(tr(
 			"Keys Ctrl+G: Go to typed address."
 			"\nKeys Ctrl+B: Open breakpoints settings."
-			"\nKeys Ctrl+S: Search memory string utility."
-			"\nKeys Alt+S: Capture SPU images of selected SPU."
+			"\nKeys Ctrl+C: Copy instruction contents."
+			"\nKeys Ctrl+F: Find thread."
+			"\nKeys Alt+S: Capture SPU images of selected SPU or generalized form when used from PPU."
+			"\nKeys Alt+S: Launch a memory viewer pointed to the current RSX semaphores location when used from RSX."
 			"\nKeys Alt+R: Load last saved SPU state capture."
 			"\nKey D: SPU MFC commands logger, MFC debug setting must be enabled."
 			"\nKey D: Also PPU calling history logger, interpreter and non-zero call history size must be used."
@@ -315,14 +341,50 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 		dlg->setLayout(layout);
 		dlg->setFixedSize(dlg->sizeHint());
 		dlg->move(QCursor::pos());
-		dlg->exec();
+		dlg->open();
 		return;
 	}
 	default: break;
 	}
 
+	if (event->modifiers() == Qt::ControlModifier)
+	{
+		switch (const auto key = event->key())
+		{
+		case Qt::Key_PageUp:
+		case Qt::Key_PageDown:
+		{
+			if (event->isAutoRepeat())
+			{
+				event->ignore();
+				break;
+			}
+
+			const int count = m_choice_units->count();
+			const int cur_index = m_choice_units->currentIndex();
+
+			if (count && cur_index >= 0)
+			{
+				// Wrap around
+				// Adding count so the result would not be negative, that would alter the remainder operation
+				m_choice_units->setCurrentIndex((cur_index + count + (key == Qt::Key_PageUp ? -1 : 1)) % count);
+			}
+
+			return;
+		}
+		case Qt::Key_F:
+		{
+			m_choice_units->clearEditText();
+			m_choice_units->setFocus();
+			return;
+		}
+		default: break;
+		}
+	}
+
 	if (!cpu)
 	{
+		event->ignore();
 		return;
 	}
 
@@ -330,12 +392,15 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 	const u32 pc = (m_debugger_list->m_pc & address_limits);
 	const u32 selected = (m_debugger_list->m_showing_selected_instruction ? m_debugger_list->m_selected_instruction : cpu->get_pc()) & address_limits;
 
-	const auto modifiers = QApplication::keyboardModifiers();
+	const auto modifiers = event->modifiers();
 
-	if (modifiers & Qt::ControlModifier)
+	if (modifiers == Qt::ControlModifier)
 	{
 		if (event->isAutoRepeat())
+		{
+			event->ignore();
 			return;
+		}
 
 		switch (event->key())
 		{
@@ -349,20 +414,6 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 			open_breakpoints_settings();
 			return;
 		}
-		case Qt::Key_S:
-		{
-			if (m_disasm && (cpu->id_type() == 2 || cpu->id_type() == 1))
-			{
-				if (cpu->id_type() == 2)
-				{
-					// Save shared pointer to shared memory handle, ensure the destructor will not be called until the SPUDisAsm is destroyed
-					static_cast<SPUDisAsm*>(m_disasm.get())->set_shm(static_cast<const spu_thread*>(cpu)->shm);
-				}
-
-				idm::make<memory_searcher_handle>(this, m_disasm, cpu->id_type() == 2 ? cpu->get_name() : "");
-			}
-			return;
-		}
 		default: break;
 		}
 	}
@@ -373,7 +424,9 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 		case Qt::Key_D:
 		{
 			if (event->isAutoRepeat())
-				return;
+			{
+				break;
+			}
 
 			auto get_max_allowed = [&](QString title, QString description, u32 limit) -> u32
 			{
@@ -384,7 +437,7 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 				dlg.set_input_font(mono, false);
 				dlg.set_clear_button_enabled(false);
 				dlg.set_button_enabled(QDialogButtonBox::StandardButton::Ok, false);
-				dlg.set_validator(new QRegularExpressionValidator(QRegularExpression("^[1-9][0-9]*$")));
+				dlg.set_validator(new QRegularExpressionValidator(QRegularExpression("^[1-9][0-9]*$"), &dlg));
 
 				u32 max = 0;
 
@@ -411,6 +464,8 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 
 			auto copy_overlapping_list = [&] <typename T> (u64& index, u64 max, const std::vector<T>& in, std::vector<T>& out, bool& emptied)
 			{
+				max = std::min<u64>(max, in.size());
+
 				const u64 current_pos = index % in.size();
 				const u64 last_elements = std::min<u64>(current_pos, max);
 				const u64 overlapped_old_elements = std::min<u64>(index, max) - last_elements;
@@ -453,7 +508,7 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 					auto& dump = *it;
 
 					const u32 pc = std::exchange(dump.cmd.eah, 0);
-					fmt::append(ret, "\n(%d) PC 0x%05x: [%s]", i, pc, dump.cmd);
+					fmt::append(ret, "\n(%d) PC 0x%05x: [%s] (%s)", i, pc, dump.cmd, spu_block_hash{dump.block_hash});
 
 					if (dump.cmd.cmd == MFC_PUTLLC_CMD)
 					{
@@ -492,13 +547,16 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 
 				// Preallocate in order to save execution time when inside suspend_all.
 				std::vector<u32> copy(max);
+				std::vector<typename ppu_thread::syscall_history_t::entry_t> sys_copy(ppu_thread::syscall_history_max_size);
 
-				bool emptied = false;
+				std::array<bool, 2> emptied{};
 
 				cpu_thread::suspend_all(nullptr, {}, [&]
 				{
 					auto& list = static_cast<ppu_thread*>(cpu)->call_history;
-					copy_overlapping_list(list.index, max, list.data, copy, emptied);
+					auto& sys_list = static_cast<ppu_thread*>(cpu)->syscall_history;
+					copy_overlapping_list(list.index, max, list.data, copy, emptied[0]);
+					copy_overlapping_list(sys_list.index, max, sys_list.data, sys_copy, emptied[1]);
 				});
 
 				std::string ret;
@@ -512,14 +570,25 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 					fmt::append(ret, "\n(%u) 0x%08x: %s", i, *it, dis_asm.last_opcode);
 				}
 
+				i = 0;
+				for (auto it = sys_copy.rbegin(); it != sys_copy.rend(); it++, i++)
+				{
+					fmt::append(ret, "\n(%u) 0x%08x: %s, 0x%x, r3=0x%x, r4=0x%x, r5=0x%x, r6=0x%x", i, it->cia, it->func_name, it->error, it->args[0], it->args[1], it->args[2], it->args[3]);
+				}
+
 				if (ret.empty())
 				{
 					ret = "No PPU calls have been logged";
 				}
 
-				if (emptied)
+				if (emptied[0])
 				{
 					ret += "\nPrevious call history has been emptied!";
+				}
+
+				if (emptied[1])
+				{
+					ret += "\nPrevious HLE call history has been emptied!";
 				}
 
 				ppu_log.success("PPU calling history dump of '%s': %s", cpu->get_name(), ret);
@@ -530,7 +599,9 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 		case Qt::Key_E:
 		{
 			if (event->isAutoRepeat())
-				return;
+			{
+				break;
+			}
 
 			if (cpu->id_type() == 1 || cpu->id_type() == 2)
 			{
@@ -541,23 +612,43 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 					m_inst_editor->show();
 				}
 			}
+
 			return;
 		}
 		case Qt::Key_F:
 		{
 			if (event->isAutoRepeat())
-				return;
+			{
+				break;
+			}
 
-			if (cpu->id_type() != 2)
-				return;
+			if (cpu->id_type() == 1)
+			{
+				static_cast<ppu_thread*>(cpu)->debugger_mode.atomic_op([](ppu_debugger_mode& mode)
+				{
+					mode = static_cast<ppu_debugger_mode>((static_cast<u32>(mode) + 1) % static_cast<u32>(ppu_debugger_mode::max_mode));
+				});
 
-			static_cast<spu_thread*>(cpu)->debugger_float_mode ^= 1; // Switch mode
-			return;
+				return;
+			}
+			if (cpu->id_type() == 2)
+			{
+				static_cast<spu_thread*>(cpu)->debugger_mode.atomic_op([](spu_debugger_mode& mode)
+				{
+					mode = static_cast<spu_debugger_mode>((static_cast<u32>(mode) + 1) % static_cast<u32>(spu_debugger_mode::max_mode));
+				});
+
+				return;
+			}
+
+			break;
 		}
 		case Qt::Key_R:
 		{
 			if (event->isAutoRepeat())
-				return;
+			{
+				break;
+			}
 
 			if (cpu->id_type() == 1 || cpu->id_type() == 2)
 			{
@@ -574,15 +665,35 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 					m_reg_editor->show();
 				}
 			}
+
 			return;
 		}
 		case Qt::Key_S:
 		{
 			if (event->isAutoRepeat())
-				return;
+			{
+				break;
+			}
 
 			if (modifiers & Qt::AltModifier)
 			{
+				if (cpu->id_type() == 0x55)
+				{
+					if (u32 addr = static_cast<rsx::thread*>(cpu)->label_addr)
+					{
+						// Memory viewer pointing to RSX semaphores
+						idm::make<memory_viewer_handle>(this, m_disasm, addr, make_check_cpu(nullptr));
+					}
+
+					return;
+				}
+
+				if (cpu->id_type() == 1)
+				{
+					new elf_memory_dumping_dialog(pc, m_gui_settings, this);
+					return;
+				}
+
 				if (cpu->id_type() != 2)
 				{
 					return;
@@ -590,13 +701,15 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 
 				if (!cpu->state.all_of(cpu_flag::wait + cpu_flag::dbg_pause))
 				{
-					QMessageBox::warning(this, QObject::tr("Pause the SPU Thread!"), QObject::tr("Cannot perform SPU capture due to the thread need manual pausing!"));
+					QMessageBox::warning(this, QObject::tr("Pause the SPU Thread!"), QObject::tr("Cannot perform SPU capture due to the thread needing manual pausing!"));
 					return;
 				}
 
 				static_cast<spu_thread*>(cpu)->capture_state();
+				return;
 			}
-			return;
+
+			break;
 		}
 		case Qt::Key_N:
 		{
@@ -634,10 +747,18 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 		case Qt::Key_M:
 		{
 			if (event->isAutoRepeat())
-				return;
+			{
+				break;
+			}
+
+			if (m_disasm && cpu->id_type() == 2)
+			{
+				// Save shared pointer to shared memory handle, ensure the destructor will not be called until the SPUDisAsm is destroyed
+				static_cast<SPUDisAsm*>(m_disasm.get())->set_shm(static_cast<const spu_thread*>(cpu)->shm);
+			}
 
 			// Memory viewer
-			idm::make<memory_viewer_handle>(this, pc, make_check_cpu(cpu));
+			idm::make<memory_viewer_handle>(this, m_disasm, pc, make_check_cpu(cpu));
 			return;
 		}
 		case Qt::Key_F10:
@@ -653,6 +774,8 @@ void debugger_frame::keyPressEvent(QKeyEvent* event)
 		default: break;
 		}
 	}
+
+	event->ignore();
 }
 
 cpu_thread* debugger_frame::get_cpu()
@@ -690,25 +813,56 @@ cpu_thread* debugger_frame::get_cpu()
 	return m_rsx;
 }
 
-std::function<cpu_thread*()> debugger_frame::make_check_cpu(cpu_thread* cpu)
+std::function<cpu_thread*()> debugger_frame::make_check_cpu(cpu_thread* cpu, bool unlocked)
 {
 	const u32 id = cpu ? cpu->id : umax;
 	const u32 type = id >> 24;
 
-	std::shared_ptr<cpu_thread> shared = type == 1 ? static_cast<std::shared_ptr<cpu_thread>>(idm::get<named_thread<ppu_thread>>(id)) :
-		type == 2 ? idm::get<named_thread<spu_thread>>(id) : nullptr;
+	std::shared_ptr<cpu_thread> shared;
+
+	if (g_fxo->is_init<id_manager::id_map<named_thread<ppu_thread>>>() && g_fxo->is_init<id_manager::id_map<named_thread<spu_thread>>>())
+	{
+		if (unlocked)
+		{
+			if (type == 1)
+			{
+				shared = idm::get_unlocked<named_thread<ppu_thread>>(id);
+			}
+			else if (type == 2)
+			{
+				shared = idm::get_unlocked<named_thread<spu_thread>>(id);
+			}
+		}
+		else
+		{
+			if (type == 1)
+			{
+				shared = idm::get<named_thread<ppu_thread>>(id);
+			}
+			else if (type == 2)
+			{
+				shared = idm::get<named_thread<spu_thread>>(id);
+			}
+		}
+	}
 
 	if (shared.get() != cpu)
 	{
 		shared.reset();
 	}
 
-	return [&rsx = m_rsx, cpu, type, shared = std::move(shared)]() -> cpu_thread*
+	return [cpu, type, shared = std::move(shared), emulation_id = Emu.GetEmulationIdentifier()]() -> cpu_thread*
 	{
+		if (emulation_id != Emu.GetEmulationIdentifier())
+		{
+			// Invalidate all data after Emu.Kill()
+			return nullptr;
+		}
+
 		if (type == 1 || type == 2)
 		{
 			// SPU and PPU
-			if (!shared || (shared->state & cpu_flag::exit && shared->state & cpu_flag::wait))
+			if (!shared || shared->state.all_of(cpu_flag::exit + cpu_flag::wait))
 			{
 				return nullptr;
 			}
@@ -717,7 +871,7 @@ std::function<cpu_thread*()> debugger_frame::make_check_cpu(cpu_thread* cpu)
 		}
 
 		// RSX
-		if (rsx == cpu)
+		if (g_fxo->try_get<rsx::thread>() == cpu)
 		{
 			return cpu;
 		}
@@ -797,7 +951,7 @@ void debugger_frame::UpdateUI()
 	m_ui_update_ctr++;
 }
 
-using data_type = std::pair<cpu_thread*, u32>;
+using data_type = std::function<cpu_thread*()>;
 
 Q_DECLARE_METATYPE(data_type);
 
@@ -819,21 +973,18 @@ void debugger_frame::UpdateUnitList()
 		return;
 	}
 
-	//const int old_size = m_choice_units->count();
 	QVariant old_cpu = m_choice_units->currentData();
 
 	bool reselected = false;
 
 	const auto on_select = [&](u32 id, cpu_thread& cpu)
 	{
-		if (emu_state == system_state::stopped) return;
-
-		const QVariant var_cpu = QVariant::fromValue<data_type>(std::make_pair(&cpu, id));
+		const QVariant var_cpu = QVariant::fromValue<data_type>(make_check_cpu(std::addressof(cpu), true));
 
 		// Space at the end is to pad a gap on the right
 		m_choice_units->addItem(qstr((id >> 24 == 0x55 ? "RSX[0x55555555]" : cpu.get_name()) + ' '), var_cpu);
 
-		if (!reselected && old_cpu == var_cpu)
+		if (!reselected && old_cpu.canConvert<data_type>() && old_cpu.value<data_type>()() == std::addressof(cpu))
 		{
 			m_choice_units->setCurrentIndex(m_choice_units->count() - 1);
 			reselected = true;
@@ -846,8 +997,11 @@ void debugger_frame::UpdateUnitList()
 		m_choice_units->clear();
 		m_choice_units->addItem(NoThreadString);
 
-		idm::select<named_thread<ppu_thread>>(on_select);
-		idm::select<named_thread<spu_thread>>(on_select);
+		if (emu_state != system_state::stopped)
+		{
+			idm::select<named_thread<ppu_thread>>(on_select);
+			idm::select<named_thread<spu_thread>>(on_select);
+		}
 
 		if (const auto render = g_fxo->try_get<rsx::thread>(); emu_state != system_state::stopped && render && render->ctrl)
 		{
@@ -860,6 +1014,7 @@ void debugger_frame::UpdateUnitList()
 	{
 		if (m_reg_editor) m_reg_editor->close();
 		if (m_inst_editor) m_inst_editor->close();
+		if (m_goto_dialog) m_goto_dialog->close();
 	}
 
 	if (emu_state == system_state::stopped)
@@ -875,10 +1030,15 @@ void debugger_frame::UpdateUnitList()
 
 void debugger_frame::OnSelectUnit()
 {
-	auto [selected, cpu_id] = m_choice_units->currentData().value<data_type>();
+	cpu_thread* selected = nullptr;
 
 	if (m_emu_state != system_state::stopped)
 	{
+		if (const QVariant data = m_choice_units->currentData(); data.canConvert<data_type>())
+		{
+			selected = data.value<data_type>()();
+		}
+
 		if (selected && m_cpu.get() == selected)
 		{
 			// They match, nothing to do.
@@ -895,10 +1055,6 @@ void debugger_frame::OnSelectUnit()
 			return;
 		}
 	}
-	else
-	{
-		selected = nullptr;
-	}
 
 	m_disasm.reset();
 	m_cpu.reset();
@@ -906,6 +1062,8 @@ void debugger_frame::OnSelectUnit()
 
 	if (selected)
 	{
+		const u32 cpu_id = selected->id;
+
 		switch (cpu_id >> 24)
 		{
 		case 1:
@@ -991,7 +1149,7 @@ void debugger_frame::WritePanels()
 	int loc = m_misc_state->verticalScrollBar()->value();
 	int hloc = m_misc_state->horizontalScrollBar()->value();
 	m_misc_state->clear();
-	m_misc_state->setText(qstr(cpu->dump_misc()));
+	m_misc_state->setPlainText(qstr(cpu->dump_misc()));
 	m_misc_state->verticalScrollBar()->setValue(loc);
 	m_misc_state->horizontalScrollBar()->setValue(hloc);
 
@@ -999,8 +1157,8 @@ void debugger_frame::WritePanels()
 	hloc = m_regs->horizontalScrollBar()->value();
 	m_regs->clear();
 	m_last_reg_state.clear();
-	cpu->dump_regs(m_last_reg_state);
-	m_regs->setText(qstr(m_last_reg_state));
+	cpu->dump_regs(m_last_reg_state, m_dump_reg_func_data);
+	m_regs->setPlainText(qstr(m_last_reg_state));
 	m_regs->verticalScrollBar()->setValue(loc);
 	m_regs->horizontalScrollBar()->setValue(hloc);
 
@@ -1009,9 +1167,16 @@ void debugger_frame::WritePanels()
 
 void debugger_frame::ShowGotoAddressDialog()
 {
-	QDialog* dlg = new QDialog(this);
-	dlg->setWindowTitle(tr("Go To Address"));
-	dlg->setModal(true);
+	if (m_goto_dialog)
+	{
+		m_goto_dialog->move(QCursor::pos());
+		m_goto_dialog->show();
+		m_goto_dialog->setFocus();
+		return;
+	}
+
+	m_goto_dialog = new QDialog(this);
+	m_goto_dialog->setWindowTitle(tr("Go To Address"));
 
 	// Panels
 	QVBoxLayout* vbox_panel(new QVBoxLayout());
@@ -1019,17 +1184,17 @@ void debugger_frame::ShowGotoAddressDialog()
 	QHBoxLayout* hbox_button_panel(new QHBoxLayout());
 
 	// Address expression input
-	QLineEdit* expression_input(new QLineEdit(dlg));
+	QLineEdit* expression_input(new QLineEdit(m_goto_dialog));
 	expression_input->setFont(m_mono);
 	expression_input->setMaxLength(18);
 
 	if (const auto thread = get_cpu(); !thread || thread->id_type() != 2)
 	{
-		expression_input->setValidator(new QRegularExpressionValidator(QRegularExpression("^(0[xX])?0*[a-fA-F0-9]{0,8}$")));
+		expression_input->setValidator(new QRegularExpressionValidator(QRegularExpression("^(0[xX])?0*[a-fA-F0-9]{0,8}$"), this));
 	}
 	else
 	{
-		expression_input->setValidator(new QRegularExpressionValidator(QRegularExpression("^(0[xX])?0*[a-fA-F0-9]{0,5}$")));
+		expression_input->setValidator(new QRegularExpressionValidator(QRegularExpression("^(0[xX])?0*[a-fA-F0-9]{0,5}$"), this));
 	}
 
 	// Ok/Cancel
@@ -1045,9 +1210,10 @@ void debugger_frame::ShowGotoAddressDialog()
 	vbox_panel->addSpacing(8);
 	vbox_panel->addLayout(hbox_button_panel);
 
-	dlg->setLayout(vbox_panel);
+	m_goto_dialog->setLayout(vbox_panel);
 
-	const auto cpu = get_cpu();
+	const auto cpu_check = make_check_cpu(get_cpu());
+	const auto cpu = cpu_check();
 	const QFont font = expression_input->font();
 
 	// -1 from get_pc() turns into 0
@@ -1055,18 +1221,85 @@ void debugger_frame::ShowGotoAddressDialog()
 	expression_input->setPlaceholderText(QString("0x%1").arg(pc, 16, 16, QChar('0')));
 	expression_input->setFixedWidth(gui::utils::get_label_width(expression_input->placeholderText(), &font));
 
-	connect(button_ok, &QAbstractButton::clicked, dlg, &QDialog::accept);
-	connect(button_cancel, &QAbstractButton::clicked, dlg, &QDialog::reject);
+	connect(button_ok, &QAbstractButton::clicked, m_goto_dialog, &QDialog::accept);
+	connect(button_cancel, &QAbstractButton::clicked, m_goto_dialog, &QDialog::reject);
 
-	dlg->move(QCursor::pos());
+	m_goto_dialog->move(QCursor::pos());
+	m_goto_dialog->setAttribute(Qt::WA_DeleteOnClose);
 
-	if (dlg->exec() == QDialog::Accepted)
+	connect(m_goto_dialog, &QDialog::finished, this, [this, cpu, cpu_check, expression_input](int result)
 	{
-		const u32 address = EvaluateExpression(expression_input->text());
-		m_debugger_list->ShowAddress(address, true);
-	}
+		// Check if the thread has not been destroyed and is still the focused since
+		// This also works if no thread is selected and has been selected before
+		if (result == QDialog::Accepted && cpu == get_cpu() && cpu == cpu_check())
+		{
+			PerformGoToRequest(expression_input->text());
+		}
 
-	dlg->deleteLater();
+		m_goto_dialog = nullptr;
+	});
+
+	m_goto_dialog->show();
+}
+
+void debugger_frame::PerformGoToRequest(const QString& text_argument)
+{
+	const bool asterisk_prefixed = text_argument.startsWith(QChar('*'));
+	const u64 address = EvaluateExpression(asterisk_prefixed ? text_argument.sliced(1, text_argument.size() - 1) : text_argument);
+
+	if (address != umax)
+	{
+		// Try to read from OPD entry if prefixed by asterisk
+		if (asterisk_prefixed)
+		{
+			if (auto cpu = get_cpu())
+			{
+				if (cpu->try_get<ppu_thread>())
+				{
+					const vm::ptr<u32> func_ptr = vm::cast(static_cast<u32>(address));
+
+					be_t<u32> code_addr{};
+
+					if (func_ptr.try_read(code_addr))
+					{
+						m_debugger_list->ShowAddress(code_addr, true);
+					}
+				}
+			}
+
+			return;
+		}
+
+		m_debugger_list->ShowAddress(static_cast<u32>(address), true);
+	}
+}
+
+void debugger_frame::PerformGoToThreadRequest(const QString& text_argument)
+{
+	const u64 thread_id = EvaluateExpression(text_argument);
+
+	if (thread_id != umax)
+	{
+		for (int i = 0; i < m_choice_units->count(); i++)
+		{
+			QVariant cpu = m_choice_units->itemData(i);
+
+			if (cpu.canConvert<data_type>())
+			{
+				if (cpu_thread* ptr = cpu.value<data_type>()(); ptr && ptr->id == thread_id)
+				{
+					// Success
+					m_choice_units->setCurrentIndex(i);
+					return;
+				}
+			}
+		}
+	}
+}
+
+void debugger_frame::PerformAddBreakpointRequest(u32 addr)
+{
+	m_debugger_list->BreakpointRequested(addr, true);
 }
 
 u64 debugger_frame::EvaluateExpression(const QString& expression)
@@ -1078,8 +1311,8 @@ u64 debugger_frame::EvaluateExpression(const QString& expression)
 	const u64 res = static_cast<u64>(fixed_expression.toULong(&ok, 16));
 
 	if (ok) return res;
-	if (const auto thread = get_cpu()) return thread->get_pc();
-	return 0;
+	if (const auto thread = get_cpu(); thread && expression.isEmpty()) return thread->get_pc();
+	return umax;
 }
 
 void debugger_frame::ClearBreakpoints() const
@@ -1137,6 +1370,22 @@ void debugger_frame::DoStep(bool step_over)
 
 		if (const auto _state = +cpu->state; _state & s_pause_flags && _state & cpu_flag::wait && !(_state & cpu_flag::dbg_step))
 		{
+			if (should_step_over && cpu->id_type() == 1)
+			{
+				const u32 current_instruction_pc = cpu->get_pc();
+
+				vm::ptr<u32> inst_ptr = vm::cast(current_instruction_pc);
+				be_t<u32> result{};
+
+				if (inst_ptr.try_read(result))
+				{
+					ppu_opcode_t ppu_op{result};
+					const ppu_itype::type itype = g_ppu_itype.decode(ppu_op.opcode);
+
+					should_step_over = (itype & ppu_itype::branch && ppu_op.lk);
+				}
+			}
+
 			if (should_step_over)
 			{
 				const u32 current_instruction_pc = cpu->get_pc();
@@ -1169,7 +1418,7 @@ void debugger_frame::DoStep(bool step_over)
 				}
 			});
 
-			cpu->state.notify_one(s_pause_flags);
+			cpu->state.notify_one();
 		}
 	}
 
@@ -1180,6 +1429,11 @@ void debugger_frame::DoStep(bool step_over)
 
 void debugger_frame::EnableUpdateTimer(bool enable) const
 {
+	if (m_update->isActive() == enable)
+	{
+		return;
+	}
+
 	enable ? m_update->start(10) : m_update->stop();
 }
 
@@ -1210,7 +1464,7 @@ void debugger_frame::RunBtnPress()
 				Emu.Resume();
 			}
 
-			cpu->state.notify_one(s_pause_flags);
+			cpu->state.notify_one();
 			m_debugger_list->EnableThreadFollowing();
 		}
 	}

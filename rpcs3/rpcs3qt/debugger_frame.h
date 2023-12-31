@@ -5,12 +5,13 @@
 #include "custom_dock_widget.h"
 
 #include <QSplitter>
-#include <QTextEdit>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QComboBox>
 
 #include <memory>
 #include <vector>
+#include <any>
 
 class CPUDisAsm;
 class cpu_thread;
@@ -41,8 +42,8 @@ class debugger_frame : public custom_dock_widget
 	debugger_list* m_debugger_list;
 	QSplitter* m_right_splitter;
 	QFont m_mono;
-	QTextEdit* m_misc_state;
-	QTextEdit* m_regs;
+	QPlainTextEdit* m_misc_state;
+	QPlainTextEdit* m_regs;
 	QPushButton* m_go_to_addr;
 	QPushButton* m_go_to_pc;
 	QPushButton* m_btn_step;
@@ -58,6 +59,7 @@ class debugger_frame : public custom_dock_widget
 	u32 m_last_pc = -1;
 	std::vector<char> m_last_query_state;
 	std::string m_last_reg_state;
+	std::any m_dump_reg_func_data;
 	u32 m_last_step_over_breakpoint = -1;
 	u64 m_ui_update_ctr = 0;
 	u64 m_ui_fast_update_permission_deadline = 0;
@@ -71,11 +73,12 @@ class debugger_frame : public custom_dock_widget
 	call_stack_list* m_call_stack_list;
 	instruction_editor_dialog* m_inst_editor = nullptr;
 	register_editor_dialog* m_reg_editor = nullptr;
+	QDialog* m_goto_dialog = nullptr;
 
 	std::shared_ptr<gui_settings> m_gui_settings;
 
 	cpu_thread* get_cpu();
-	std::function<cpu_thread*()> make_check_cpu(cpu_thread* cpu);
+	std::function<cpu_thread*()> make_check_cpu(cpu_thread* cpu, bool unlocked = false);
 	void open_breakpoints_settings();
 
 public:
@@ -91,6 +94,9 @@ public:
 	void WritePanels();
 	void EnableButtons(bool enable);
 	void ShowGotoAddressDialog();
+	void PerformGoToRequest(const QString& text_argument);
+	void PerformGoToThreadRequest(const QString& text_argument);
+	void PerformAddBreakpointRequest(u32 addr);
 	u64 EvaluateExpression(const QString& expression);
 	void ClearBreakpoints() const; // Fallthrough method into breakpoint_list.
 	void ClearCallStack();

@@ -1,4 +1,4 @@
-// Qt5.10+ frontend implementation for rpcs3. Known to work on Windows, Linux, Mac
+// Qt6 frontend implementation for rpcs3. Known to work on Windows, Linux, Mac
 // by Sacha Refshauge, Megamouse and flash-fire
 
 #include <iostream>
@@ -55,6 +55,7 @@ DYNAMIC_IMPORT("ntdll.dll", NtSetTimerResolution, NTSTATUS(ULONG DesiredResoluti
 #ifdef __linux__
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <sys/prctl.h>
 #endif
 
 #if defined(__APPLE__)
@@ -65,6 +66,7 @@ DYNAMIC_IMPORT("ntdll.dll", NtSetTimerResolution, NTSTATUS(ULONG DesiredResoluti
 #include "Utilities/Thread.h"
 #include "Utilities/File.h"
 #include "Utilities/StrUtil.h"
+#include "util/media_utils.h"
 #include "rpcs3_version.h"
 #include "Emu/System.h"
 #include "Emu/system_utils.hpp"
@@ -80,15 +82,13 @@ static const bool s_init_locale = []()
 	return true;
 }();
 
-inline std::string sstr(const QString& _in) { return _in.toStdString(); }
-
 static semaphore<> s_qt_init;
 
 static atomic_t<bool> s_headless = false;
 static atomic_t<bool> s_no_gui = false;
 static atomic_t<char*> s_argv0;
 
-std::string g_pad_profile_override;
+std::string g_input_config_override;
 
 extern thread_local std::string(*g_tls_log_prefix)();
 extern thread_local std::string_view g_tls_serialize_name;
@@ -291,7 +291,7 @@ constexpr auto arg_styles       = "styles";
 constexpr auto arg_style        = "style";
 constexpr auto arg_stylesheet   = "stylesheet";
 constexpr auto arg_config       = "config";
-constexpr auto arg_pad_profile  = "pad-profile"; // only useful with no-gui
+constexpr auto arg_input_config = "input-config"; // only useful with no-gui
 constexpr auto arg_q_debug      = "qDebug";
 constexpr auto arg_error        = "error";
 constexpr auto arg_updating     = "updating";
@@ -303,6 +303,7 @@ constexpr auto arg_rsx_capture  = "rsx-capture";
 constexpr auto arg_timer        = "high-res-timer";
 constexpr auto arg_verbose_curl = "verbose-curl";
 constexpr auto arg_any_location = "allow-any-location";
+constexpr auto arg_codecs       = "codecs";
 
 int find_arg(std::string arg, int& argc, char* argv[])
 {
@@ -348,9 +349,6 @@ QCoreApplication* create_application(int& argc, char* argv[])
 		// Set QT_ENABLE_HIGHDPI_SCALING from environment. Defaults to cli argument, which defaults to 1.
 		use_high_dpi = "1" == qEnvironmentVariable("QT_ENABLE_HIGHDPI_SCALING", high_dpi_setting);
 	}
-
-	// AA_EnableHighDpiScaling has to be set before creating a QApplication
-	QApplication::setAttribute(use_high_dpi ? Qt::AA_EnableHighDpiScaling : Qt::AA_DisableHighDpiScaling);
 
 	if (use_high_dpi)
 	{
@@ -400,17 +398,23 @@ QCoreApplication* create_application(int& argc, char* argv[])
 	return new gui_application(argc, argv);
 }
 
+template <>
+void fmt_class_string<QString>::format(std::string& out, u64 arg)
+{
+ 	out += get_object(arg).toStdString();
+}
+
 void log_q_debug(QtMsgType type, const QMessageLogContext& context, const QString& msg)
 {
 	Q_UNUSED(context)
 
 	switch (type)
 	{
-	case QtDebugMsg: q_debug.trace("%s", msg.toStdString()); break;
-	case QtInfoMsg: q_debug.notice("%s", msg.toStdString()); break;
-	case QtWarningMsg: q_debug.warning("%s", msg.toStdString()); break;
-	case QtCriticalMsg: q_debug.error("%s", msg.toStdString()); break;
-	case QtFatalMsg: q_debug.fatal("%s", msg.toStdString()); break;
+	case QtDebugMsg: q_debug.trace("%s", msg); break;
+	case QtInfoMsg: q_debug.notice("%s", msg); break;
+	case QtWarningMsg: q_debug.warning("%s", msg); break;
+	case QtCriticalMsg: q_debug.error("%s", msg); break;
+	case QtFatalMsg: q_debug.fatal("%s", msg); break;
 	}
 }
 
@@ -418,7 +422,7 @@ template <>
 void fmt_class_string<std::chrono::sys_time<typename std::chrono::system_clock::duration>>::format(std::string& out, u64 arg)
 {
 	const std::time_t dateTime = std::chrono::system_clock::to_time_t(get_object(arg));
- 	out += date_time::fmt_time("%Y-%m-%eT%H:%M:%S", dateTime);
+ 	out += date_time::fmt_time("%Y-%m-%dT%H:%M:%S", dateTime);
 }
 
 void run_platform_sanity_checks()
@@ -438,6 +442,11 @@ int main(int argc, char** argv)
 	struct ::rusage intro_stats{};
 	::getrusage(RUSAGE_THREAD, &intro_stats);
 	const u64 intro_time = (intro_stats.ru_utime.tv_sec + intro_stats.ru_stime.tv_sec) * 1000000000ull + (intro_stats.ru_utime.tv_usec + intro_stats.ru_stime.tv_usec) * 1000ull;
+#endif
+
+#ifdef __linux__
+	// Set timerslack value for Linux. The default value is 50,000ns. Change this to just 1 since we value precise timers.
+	prctl(PR_SET_TIMERSLACK, 1, 0, 0, 0);
 #endif
 
 	s_argv0 = argv[0]; // Save for report_fatal_error
@@ -643,8 +652,8 @@ int main(int argc, char** argv)
 	parser.addOption(QCommandLineOption(arg_stylesheet, "Loads a custom stylesheet.", "path", ""));
 	const QCommandLineOption config_option(arg_config, "Forces the emulator to use this configuration file for CLI-booted game.", "path", "");
 	parser.addOption(config_option);
-	const QCommandLineOption pad_profile_option(arg_pad_profile, "Forces the emulator to use this pad profile file for CLI-booted game.", "name", "");
-	parser.addOption(pad_profile_option);
+	const QCommandLineOption input_config_option(arg_input_config, "Forces the emulator to use this input config file for CLI-booted game.", "name", "");
+	parser.addOption(input_config_option);
 	const QCommandLineOption installfw_option(arg_installfw, "Forces the emulator to install this firmware file.", "path", "");
 	parser.addOption(installfw_option);
 	const QCommandLineOption installpkg_option(arg_installpkg, "Forces the emulator to install this pkg file.", "path", "");
@@ -664,11 +673,35 @@ int main(int argc, char** argv)
 	parser.addOption(QCommandLineOption(arg_timer, "Enable high resolution timer for better performance (windows)", "enabled", "1"));
 	parser.addOption(QCommandLineOption(arg_verbose_curl, "Enable verbose curl logging."));
 	parser.addOption(QCommandLineOption(arg_any_location, "Allow RPCS3 to be run from any location. Dangerous"));
+	const QCommandLineOption codec_option(arg_codecs, "List ffmpeg codecs");
+	parser.addOption(codec_option);
 	parser.process(app->arguments());
 
 	// Don't start up the full rpcs3 gui if we just want the version or help.
 	if (parser.isSet(version_option) || parser.isSet(help_option))
 		return 0;
+
+	if (parser.isSet(codec_option))
+	{
+#ifdef _WIN32
+		if (AttachConsole(ATTACH_PARENT_PROCESS) || AllocConsole())
+		{
+			[[maybe_unused]] const auto con_out = freopen("CONOUT$", "w", stdout);
+			[[maybe_unused]] const auto con_err = freopen("CONOUT$", "w", stderr);
+		}
+#endif
+		for (const utils::ffmpeg_codec& codec : utils::list_ffmpeg_decoders())
+		{
+			fprintf(stdout, "Found ffmpeg decoder: %s (%d, %s)\n", codec.name.c_str(), codec.codec_id, codec.long_name.c_str());
+			sys_log.success("Found ffmpeg decoder: %s (%d, %s)", codec.name, codec.codec_id, codec.long_name);
+		}
+		for (const utils::ffmpeg_codec& codec : utils::list_ffmpeg_encoders())
+		{
+			fprintf(stdout, "Found ffmpeg encoder: %s (%d, %s)\n", codec.name.c_str(), codec.codec_id, codec.long_name.c_str());
+			sys_log.success("Found ffmpeg encoder: %s (%d, %s)", codec.name, codec.codec_id, codec.long_name);
+		}
+		return 0;
+	}
 
 	// Set curl to verbose if needed
 	rpcs3::curl::g_curl_verbose = parser.isSet(arg_verbose_curl);
@@ -944,8 +977,6 @@ int main(int argc, char** argv)
 
 	if (gui_application* gui_app = qobject_cast<gui_application*>(app.data()))
 	{
-		gui_app->setAttribute(Qt::AA_UseHighDpiPixmaps);
-		gui_app->setAttribute(Qt::AA_DisableWindowContextHelpButton);
 		gui_app->setAttribute(Qt::AA_DontCheckOpenGLContextThreadAffinity);
 
 		gui_app->SetShowGui(!s_no_gui);
@@ -1016,7 +1047,25 @@ int main(int argc, char** argv)
 				return 1;
 			}
 		}
+
+		// Check nonsensical archive locations
+		for (const std::string_view& expr : { "/Rar$"sv })
+		{
+			if (emu_dir.find(expr) != umax)
+			{
+				report_fatal_error(fmt::format(
+					"RPCS3 should never be run from an archive!\n"
+					"Please install RPCS3 in a persistent location.\n"
+					"Current location:\n%s", emu_dir));
+				return 1;
+			}
+		}
 	}
+
+// Set timerslack value for Linux. The default value is 50,000ns. Change this to just 1 since we value precise timers.
+#ifdef __linux__
+	prctl(PR_SET_TIMERSLACK, 1, 0, 0, 0);
+#endif
 
 #ifdef _WIN32
 	// Create dummy permanent low resolution timer to workaround messing with system timer resolution
@@ -1027,7 +1076,7 @@ int main(int argc, char** argv)
 	bool got_timer_resolution = NtQueryTimerResolution(&min_res, &max_res, &orig_res) == 0;
 
 	// Set 0.5 msec timer resolution for best performance
-	// - As QT5 timers (QTimer) sets the timer resolution to 1 msec, override it here.
+	// - As QT timers (QTimer) sets the timer resolution to 1 msec, override it here.
 	if (parser.value(arg_timer).toStdString() == "1")
 	{
 		ULONG new_res;
@@ -1077,29 +1126,45 @@ int main(int argc, char** argv)
 				std::cout << "Not a file: " << mod.toStdString() << std::endl;
 				return 1;
 			}
+
 			vec_modules.push_back(fi.absoluteFilePath().toStdString());
 		}
 
-		const auto input_cb = [](std::string old_path, std::string path, bool tried) -> std::string
-		{
-			const std::string hint = fmt::format("Hint: KLIC (KLicense key) is a 16-byte long string. (32 hexadecimal characters)"
-				"\nAnd is logged with some sceNpDrm* functions when the game/application which owns \"%0\" is running.", path);
+		Emu.Init();
 
-			if (tried)
+		std::shared_ptr<decrypt_binaries_t> decrypter = std::make_shared<decrypt_binaries_t>(std::move(vec_modules));
+
+		usz mod_index = decrypter->decrypt();
+		usz repeat_count = mod_index == 0 ? 1 : 0;
+
+		while (!decrypter->done())
+		{
+			const std::string& path = (*decrypter)[mod_index];
+			const std::string filename = path.substr(path.find_last_of(fs::delim) + 1);
+
+			const std::string hint = fmt::format("Hint: KLIC (KLicense key) is a 16-byte long string. (32 hexadecimal characters)"
+				"\nAnd is logged with some sceNpDrm* functions when the game/application which owns \"%0\" is running.", filename);
+
+			if (repeat_count >= 2)
 			{
-				std::cout << "Failed to decrypt " << old_path << " with specfied KLIC, retrying.\n" << hint << std::endl;
+				std::cout << "Failed to decrypt " << path << " with specfied KLIC, retrying.\n" << hint << std::endl;
 			}
 
-			std::cout << "Enter KLIC of " << path << "\nHexadecimal only, 32 characters:" << std::endl;
+			std::cout << "Enter KLIC of " << filename << "\nHexadecimal only, 32 characters:" << std::endl;
 
 			std::string input;
 			std::cin >> input;
 
-			return input;
-		};
+			if (input.empty())
+			{
+				break;
+			}
 
-		Emu.Init();
-		decrypt_sprx_libraries(vec_modules, input_cb);
+			const usz new_index = decrypter->decrypt(input);
+			repeat_count = new_index == mod_index ? repeat_count + 1 : 0;
+			mod_index = new_index;
+		}
+
 		Emu.Quit(true);
 		return 0;
 	}
@@ -1142,7 +1207,7 @@ int main(int argc, char** argv)
 
 	for (const auto& opt : parser.optionNames())
 	{
-		sys_log.notice("Option passed via command line: %s %s", opt.toStdString(), parser.value(opt).toStdString());
+		sys_log.notice("Option passed via command line: %s %s", opt, parser.value(opt));
 	}
 
 	if (parser.isSet(arg_savestate))
@@ -1195,7 +1260,7 @@ int main(int argc, char** argv)
 	}
 	else if (const QStringList args = parser.positionalArguments(); !args.isEmpty() && !is_updating && !parser.isSet(arg_installfw) && !parser.isSet(arg_installpkg))
 	{
-		std::string spath = sstr(::at32(args, 0));
+		const std::string spath = ::at32(args, 0).toStdString();
 
 		if (spath.starts_with(Emulator::vfs_boot_prefix))
 		{
@@ -1237,30 +1302,30 @@ int main(int argc, char** argv)
 			}
 		}
 
-		if (parser.isSet(arg_pad_profile))
+		if (parser.isSet(arg_input_config))
 		{
 			if (!s_no_gui)
 			{
-				report_fatal_error(fmt::format("The option '%s' can only be used in combination with '%s'.", arg_pad_profile, arg_no_gui));
+				report_fatal_error(fmt::format("The option '%s' can only be used in combination with '%s'.", arg_input_config, arg_no_gui));
 			}
 
-			g_pad_profile_override = parser.value(pad_profile_option).toStdString();
+			g_input_config_override = parser.value(input_config_option).toStdString();
 
-			if (g_pad_profile_override.empty())
+			if (g_input_config_override.empty())
 			{
-				report_fatal_error(fmt::format("Pad profile name is empty"));
+				report_fatal_error(fmt::format("Input config file name is empty"));
 			}
 		}
 
 		// Postpone startup to main event loop
-		Emu.CallFromMainThread([path = spath.starts_with("%RPCS3_") ? spath : sstr(QFileInfo(::at32(args, 0)).absoluteFilePath()), rpcs3_argv = std::move(rpcs3_argv), config_path = std::move(config_path)]() mutable
+		Emu.CallFromMainThread([path = spath.starts_with("%RPCS3_") ? spath : QFileInfo(::at32(args, 0)).absoluteFilePath().toStdString(), rpcs3_argv = std::move(rpcs3_argv), config_path = std::move(config_path)]() mutable
 		{
 			Emu.argv = std::move(rpcs3_argv);
 			Emu.SetForceBoot(true);
 
 			const cfg_mode config_mode = config_path.empty() ? cfg_mode::custom : cfg_mode::config_override;
 
-			if (const game_boot_result error = Emu.BootGame(path, "", false, false, config_mode, config_path); error != game_boot_result::no_errors)
+			if (const game_boot_result error = Emu.BootGame(path, "", false, config_mode, config_path); error != game_boot_result::no_errors)
 			{
 				sys_log.error("Booting '%s' with cli argument failed: reason: %s", path, error);
 

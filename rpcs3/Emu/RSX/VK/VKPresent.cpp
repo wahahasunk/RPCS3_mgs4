@@ -3,6 +3,7 @@
 #include "vkutils/buffer_object.h"
 #include "Emu/RSX/Overlays/overlay_manager.h"
 #include "Emu/RSX/Overlays/overlays.h"
+#include "Emu/RSX/Overlays/overlay_debug_overlay.h"
 #include "Emu/Cell/Modules/cellVideoOut.h"
 
 #include "upscalers/bilinear_pass.hpp"
@@ -125,7 +126,7 @@ void VKGSRender::advance_queued_frames()
 	vk::vmm_check_memory_usage();
 
 	// m_rtts storage is double buffered and should be safe to tag on frame boundary
-	m_rtts.free_invalidated(*m_current_command_buffer, vk::vmm_determine_memory_load_severity());
+	m_rtts.trim(*m_current_command_buffer, vk::vmm_determine_memory_load_severity());
 
 	// Texture cache is also double buffered to prevent use-after-free
 	m_texture_cache.on_frame_end();
@@ -199,11 +200,6 @@ void VKGSRender::frame_context_cleanup(vk::frame_context_t *ctx)
 	// Resource cleanup.
 	// TODO: This is some outdated crap.
 	{
-		if (m_text_writer)
-		{
-			m_text_writer->reset_descriptors();
-		}
-
 		if (m_overlay_manager && m_overlay_manager->has_dirty())
 		{
 			auto ui_renderer = vk::get_overlay_pass<vk::ui_overlay_renderer>();
@@ -460,7 +456,7 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 		if (!buffer_pitch)
 			buffer_pitch = buffer_width * avconfig.get_bpp();
 
-		const u32 video_frame_height = (!avconfig._3d? avconfig.resolution_y : (avconfig.resolution_y - 30) / 2);
+		const u32 video_frame_height = (avconfig.stereo_mode == stereo_render_mode_options::disabled? avconfig.resolution_y : ((avconfig.resolution_y - 30) / 2));
 		buffer_width = std::min(buffer_width, avconfig.resolution_x);
 		buffer_height = std::min(buffer_height, video_frame_height);
 	}
@@ -484,7 +480,7 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 
 		image_to_flip = get_present_source(&present_info, avconfig);
 
-		if (avconfig._3d) [[unlikely]]
+		if (avconfig.stereo_mode != stereo_render_mode_options::disabled) [[unlikely]]
 		{
 			const auto [unused, min_expected_height] = rsx::apply_resolution_scale<true>(RSX_SURFACE_DIMENSION_IGNORED, buffer_height + 30);
 			if (image_to_flip->height() < min_expected_height)
@@ -617,12 +613,12 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 	{
 		const bool use_full_rgb_range_output = g_cfg.video.full_rgb_range_output.get();
 
-		if (!use_full_rgb_range_output || !rsx::fcmp(avconfig.gamma, 1.f) || avconfig._3d) [[unlikely]]
+		if (!use_full_rgb_range_output || !rsx::fcmp(avconfig.gamma, 1.f) || avconfig.stereo_mode != stereo_render_mode_options::disabled) [[unlikely]]
 		{
 			if (image_to_flip) calibration_src.push_back(image_to_flip);
 			if (image_to_flip2) calibration_src.push_back(image_to_flip2);
 
-			if (m_output_scaling == output_scaling_mode::fsr && !avconfig._3d) // 3D will be implemented later
+			if (m_output_scaling == output_scaling_mode::fsr && avconfig.stereo_mode == stereo_render_mode_options::disabled) // 3D will be implemented later
 			{
 				// Run upscaling pass before the rest of the output effects pipeline
 				// This can be done with all upscalers but we already get bilinear upscaling for free if we just out the filters directly
@@ -653,7 +649,7 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 
 			vk::get_overlay_pass<vk::video_out_calibration_pass>()->run(
 				*m_current_command_buffer, areau(aspect_ratio), direct_fbo, calibration_src,
-				avconfig.gamma, !use_full_rgb_range_output, avconfig._3d, single_target_pass);
+				avconfig.gamma, !use_full_rgb_range_output, avconfig.stereo_mode, single_target_pass);
 
 			direct_fbo->release();
 		}
@@ -717,7 +713,7 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 			}
 			else
 			{
-				m_frame->present_frame(sshot_frame, buffer_width, buffer_height, is_bgra);
+				m_frame->present_frame(sshot_frame, buffer_width * 4, buffer_width, buffer_height, is_bgra);
 			}
 		}
 	}
@@ -768,32 +764,6 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 
 		if (g_cfg.video.overlay)
 		{
-			// TODO: Move this to native overlay! It is both faster and easier to manage
-			if (!m_text_writer)
-			{
-				auto key = vk::get_renderpass_key(m_swapchain->get_surface_format());
-				m_text_writer = std::make_unique<vk::text_writer>();
-				m_text_writer->init(*m_device, vk::get_renderpass(*m_device, key));
-			}
-
-			m_text_writer->set_scale(m_frame->client_device_pixel_ratio());
-
-			int y_loc = 0;
-			const auto println = [&](const std::string& text)
-			{
-				m_text_writer->print_text(*m_current_command_buffer, *direct_fbo, 4, y_loc, direct_fbo->width(), direct_fbo->height(), text);
-				y_loc += 16;
-			};
-
-			println(fmt::format("RSX Load:                 %3d%%", get_load()));
-			println(fmt::format("draw calls: %17d", info.stats.draw_calls));
-			println(fmt::format("submits: %20d", info.stats.submit_count));
-			println(fmt::format("draw call setup: %12dus", info.stats.setup_time));
-			println(fmt::format("vertex upload time: %9dus", info.stats.vertex_upload_time));
-			println(fmt::format("texture upload time: %8dus", info.stats.textures_upload_time));
-			println(fmt::format("draw call execution: %8dus", info.stats.draw_exec_time));
-			println(fmt::format("submit and flip: %12dus", info.stats.flip_time));
-
 			const auto num_dirty_textures = m_texture_cache.get_unreleased_textures_count();
 			const auto texture_memory_size = m_texture_cache.get_texture_memory_in_use() / (1024 * 1024);
 			const auto tmp_texture_memory_size = m_texture_cache.get_temporary_memory_in_use() / (1024 * 1024);
@@ -806,11 +776,34 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 			const auto num_texture_upload = m_texture_cache.get_texture_upload_calls_this_frame();
 			const auto num_texture_upload_miss = m_texture_cache.get_texture_upload_misses_this_frame();
 			const auto texture_upload_miss_ratio = m_texture_cache.get_texture_upload_miss_percentage();
-			println(fmt::format("Unreleased textures: %8d", num_dirty_textures));
-			println(fmt::format("Texture cache memory: %7dM", texture_memory_size));
-			println(fmt::format("Temporary texture memory: %3dM", tmp_texture_memory_size));
-			println(fmt::format("Flush requests: %13d  = %2d (%3d%%) hard faults, %2d unavoidable, %2d misprediction(s), %2d speculation(s)", num_flushes, num_misses, cache_miss_ratio, num_unavoidable, num_mispredict, num_speculate));
-			println(fmt::format("Texture uploads: %14u (%u from CPU - %02u%%)", num_texture_upload, num_texture_upload_miss, texture_upload_miss_ratio));
+			const auto texture_copies_ellided = m_texture_cache.get_texture_copies_ellided_this_frame();
+			const auto vertex_cache_hit_count = (info.stats.vertex_cache_request_count - info.stats.vertex_cache_miss_count);
+			const auto vertex_cache_hit_ratio = info.stats.vertex_cache_request_count
+				? (vertex_cache_hit_count * 100) / info.stats.vertex_cache_request_count
+				: 0;
+
+			rsx::overlays::set_debug_overlay_text(fmt::format(
+				"RSX Load:                 %3d%%\n"
+				"draw calls: %17d\n"
+				"submits: %20d\n"
+				"draw call setup: %12dus\n"
+				"vertex upload time: %9dus\n"
+				"texture upload time: %8dus\n"
+				"draw call execution: %8dus\n"
+				"submit and flip: %12dus\n"
+				"Unreleased textures: %8d\n"
+				"Texture cache memory: %7dM\n"
+				"Temporary texture memory: %3dM\n"
+				"Flush requests: %13d  = %2d (%3d%%) hard faults, %2d unavoidable, %2d misprediction(s), %2d speculation(s)\n"
+				"Texture uploads: %12u (%u from CPU - %02u%%, %u copies avoided)\n"
+				"Vertex cache hits: %10u/%u (%u%%)",
+				get_load(), info.stats.draw_calls, info.stats.submit_count, info.stats.setup_time, info.stats.vertex_upload_time,
+				info.stats.textures_upload_time, info.stats.draw_exec_time, info.stats.flip_time,
+				num_dirty_textures, texture_memory_size, tmp_texture_memory_size,
+				num_flushes, num_misses, cache_miss_ratio, num_unavoidable, num_mispredict, num_speculate,
+				num_texture_upload, num_texture_upload_miss, texture_upload_miss_ratio, texture_copies_ellided,
+				vertex_cache_hit_count, info.stats.vertex_cache_request_count, vertex_cache_hit_ratio)
+			);
 		}
 
 		direct_fbo->release();

@@ -7,8 +7,6 @@
 
 #include "Emu/vfs_config.h"
 
-inline std::string sstr(const QString& _in) { return _in.toStdString(); }
-
 vfs_dialog_usb_input::vfs_dialog_usb_input(const QString& name, const cfg::device_info& default_info, cfg::device_info* info, std::shared_ptr<gui_settings> _gui_settings, QWidget* parent)
 	: QDialog(parent), m_gui_settings(std::move(_gui_settings)), m_gui_save(gui::fs_dev_usb_list)
 {
@@ -60,12 +58,12 @@ vfs_dialog_usb_input::vfs_dialog_usb_input(const QString& name, const cfg::devic
 
 	m_vid_edit = new QLineEdit;
 	m_vid_edit->setMaxLength(4);
-	m_vid_edit->setValidator(new QRegularExpressionValidator(QRegularExpression("^[a-fA-F0-9]*$"))); // HEX only
+	m_vid_edit->setValidator(new QRegularExpressionValidator(QRegularExpression("^[a-fA-F0-9]*$"), this)); // HEX only
 	m_vid_edit->setText(QString::fromStdString(info->vid));
 
 	m_pid_edit = new QLineEdit;
 	m_pid_edit->setMaxLength(4);
-	m_pid_edit->setValidator(new QRegularExpressionValidator(QRegularExpression("^[a-fA-F0-9]*$"))); // HEX only
+	m_pid_edit->setValidator(new QRegularExpressionValidator(QRegularExpression("^[a-fA-F0-9]*$"), this)); // HEX only
 	m_pid_edit->setText(QString::fromStdString(info->pid));
 
 	m_serial_edit = new QLineEdit;

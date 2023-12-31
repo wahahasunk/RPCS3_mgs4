@@ -47,7 +47,7 @@
       <PreprocessorDefinitions>HAVE_SNI;NDEBUG;BUILDING_LIBCURL;CURL_STATICLIB;USE_WOLFSSL;NO_MD4;WOLFSSL_USER_SETTINGS;USE_IPV6;SIZEOF_LONG=4;SIZEOF_LONG_LONG=8;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <FunctionLevelLinking>true</FunctionLevelLinking>
-      <WarningLevel>Level4</WarningLevel>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
     </ClCompile>
     <ResourceCompile>
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -64,8 +64,14 @@
     <ClCompile Include="curl\lib\asyn-ares.c" />
     <ClCompile Include="curl\lib\asyn-thread.c" />
     <ClCompile Include="curl\lib\base64.c" />
+    <ClCompile Include="curl\lib\bufq.c" />
     <ClCompile Include="curl\lib\bufref.c" />
     <ClCompile Include="curl\lib\c-hyper.c" />
+    <ClCompile Include="curl\lib\cf-h1-proxy.c" />
+    <ClCompile Include="curl\lib\cf-h2-proxy.c" />
+    <ClCompile Include="curl\lib\cf-haproxy.c" />
+    <ClCompile Include="curl\lib\cf-https-connect.c" />
+    <ClCompile Include="curl\lib\cf-socket.c" />
     <ClCompile Include="curl\lib\cfilters.c" />
     <ClCompile Include="curl\lib\conncache.c" />
     <ClCompile Include="curl\lib\connect.c" />
@@ -88,9 +94,11 @@
     <ClCompile Include="curl\lib\curl_sasl.c" />
     <ClCompile Include="curl\lib\curl_sspi.c" />
     <ClCompile Include="curl\lib\curl_threads.c" />
+    <ClCompile Include="curl\lib\curl_trc.c" />
     <ClCompile Include="curl\lib\dict.c" />
     <ClCompile Include="curl\lib\doh.c" />
     <ClCompile Include="curl\lib\dynbuf.c" />
+    <ClCompile Include="curl\lib\dynhds.c" />
     <ClCompile Include="curl\lib\easy.c" />
     <ClCompile Include="curl\lib\easygetopt.c" />
     <ClCompile Include="curl\lib\easyoptions.c" />
@@ -104,7 +112,6 @@
     <ClCompile Include="curl\lib\getenv.c" />
     <ClCompile Include="curl\lib\getinfo.c" />
     <ClCompile Include="curl\lib\gopher.c" />
-    <ClCompile Include="curl\lib\h2h3.c" />
     <ClCompile Include="curl\lib\hash.c" />
     <ClCompile Include="curl\lib\headers.c" />
     <ClCompile Include="curl\lib\hmac.c" />
@@ -115,6 +122,7 @@
     <ClCompile Include="curl\lib\hostsyn.c" />
     <ClCompile Include="curl\lib\hsts.c" />
     <ClCompile Include="curl\lib\http.c" />
+    <ClCompile Include="curl\lib\http1.c" />
     <ClCompile Include="curl\lib\http2.c" />
     <ClCompile Include="curl\lib\http_aws_sigv4.c" />
     <ClCompile Include="curl\lib\http_chunks.c" />
@@ -179,11 +187,13 @@
     <ClCompile Include="curl\lib\vauth\gsasl.c" />
     <ClCompile Include="curl\lib\version.c" />
     <ClCompile Include="curl\lib\version_win32.c" />
+    <ClCompile Include="curl\lib\vquic\curl_msh3.c" />
+    <ClCompile Include="curl\lib\vquic\curl_ngtcp2.c" />
+    <ClCompile Include="curl\lib\vquic\curl_quiche.c" />
     <ClCompile Include="curl\lib\vtls\hostcheck.c" />
     <ClCompile Include="curl\lib\vtls\rustls.c" />
     <ClCompile Include="curl\lib\vtls\x509asn1.c" />
     <ClCompile Include="curl\lib\warnless.c" />
-    <ClCompile Include="curl\lib\wildcard.c" />
     <ClCompile Include="curl\lib\vauth\cleartext.c" />
     <ClCompile Include="curl\lib\vauth\cram.c" />
     <ClCompile Include="curl\lib\vauth\digest.c" />
@@ -196,19 +206,15 @@
     <ClCompile Include="curl\lib\vauth\spnego_gssapi.c" />
     <ClCompile Include="curl\lib\vauth\spnego_sspi.c" />
     <ClCompile Include="curl\lib\vauth\vauth.c" />
-    <ClCompile Include="curl\lib\vquic\ngtcp2.c" />
-    <ClCompile Include="curl\lib\vquic\quiche.c" />
     <ClCompile Include="curl\lib\vquic\vquic.c" />
     <ClCompile Include="curl\lib\vssh\libssh.c" />
     <ClCompile Include="curl\lib\vssh\libssh2.c" />
     <ClCompile Include="curl\lib\vssh\wolfssh.c" />
     <ClCompile Include="curl\lib\vtls\bearssl.c" />
-    <ClCompile Include="curl\lib\vtls\gskit.c" />
     <ClCompile Include="curl\lib\vtls\gtls.c" />
     <ClCompile Include="curl\lib\vtls\keylog.c" />
     <ClCompile Include="curl\lib\vtls\mbedtls.c" />
     <ClCompile Include="curl\lib\vtls\mbedtls_threadlock.c" />
-    <ClCompile Include="curl\lib\vtls\nss.c" />
     <ClCompile Include="curl\lib\vtls\openssl.c" />
     <ClCompile Include="curl\lib\vtls\schannel.c" />
     <ClCompile Include="curl\lib\vtls\schannel_verify.c" />
@@ -231,8 +237,14 @@
     <ClInclude Include="curl\lib\amigaos.h" />
     <ClInclude Include="curl\lib\arpa_telnet.h" />
     <ClInclude Include="curl\lib\asyn.h" />
+    <ClInclude Include="curl\lib\bufq.h" />
     <ClInclude Include="curl\lib\bufref.h" />
     <ClInclude Include="curl\lib\c-hyper.h" />
+    <ClInclude Include="curl\lib\cf-h1-proxy.h" />
+    <ClInclude Include="curl\lib\cf-h2-proxy.h" />
+    <ClInclude Include="curl\lib\cf-haproxy.h" />
+    <ClInclude Include="curl\lib\cf-https-connect.h" />
+    <ClInclude Include="curl\lib\cf-socket.h" />
     <ClInclude Include="curl\lib\cfilters.h" />
     <ClInclude Include="curl\lib\config-amigaos.h" />
     <ClInclude Include="curl\lib\config-dos.h" />
@@ -276,10 +288,12 @@
     <ClInclude Include="curl\lib\curl_sha256.h" />
     <ClInclude Include="curl\lib\curl_sspi.h" />
     <ClInclude Include="curl\lib\curl_threads.h" />
+    <ClInclude Include="curl\lib\curl_trc.h" />
     <ClInclude Include="curl\lib\dict.h" />
     <ClInclude Include="curl\lib\doh.h" />
     <ClInclude Include="curl\lib\dotdot.h" />
     <ClInclude Include="curl\lib\dynbuf.h" />
+    <ClInclude Include="curl\lib\dynhds.h" />
     <ClInclude Include="curl\lib\easyif.h" />
     <ClInclude Include="curl\lib\easyoptions.h" />
     <ClInclude Include="curl\lib\easy_lock.h" />
@@ -293,12 +307,12 @@
     <ClInclude Include="curl\lib\functypes.h" />
     <ClInclude Include="curl\lib\getinfo.h" />
     <ClInclude Include="curl\lib\gopher.h" />
-    <ClInclude Include="curl\lib\h2h3.h" />
     <ClInclude Include="curl\lib\hash.h" />
     <ClInclude Include="curl\lib\headers.h" />
     <ClInclude Include="curl\lib\hostip.h" />
     <ClInclude Include="curl\lib\hsts.h" />
     <ClInclude Include="curl\lib\http.h" />
+    <ClInclude Include="curl\lib\http1.h" />
     <ClInclude Include="curl\lib\http2.h" />
     <ClInclude Include="curl\lib\http_aws_sigv4.h" />
     <ClInclude Include="curl\lib\http_chunks.h" />
@@ -325,7 +339,6 @@
     <ClInclude Include="curl\lib\pop3.h" />
     <ClInclude Include="curl\lib\progress.h" />
     <ClInclude Include="curl\lib\psl.h" />
-    <ClInclude Include="curl\lib\quic.h" />
     <ClInclude Include="curl\lib\rand.h" />
     <ClInclude Include="curl\lib\rename.h" />
     <ClInclude Include="curl\lib\rtsp.h" />
@@ -360,26 +373,25 @@
     <ClInclude Include="curl\lib\urlapi-int.h" />
     <ClInclude Include="curl\lib\urldata.h" />
     <ClInclude Include="curl\lib\version_win32.h" />
+    <ClInclude Include="curl\lib\vquic\curl_msh3.h" />
+    <ClInclude Include="curl\lib\vquic\curl_ngtcp2.h" />
+    <ClInclude Include="curl\lib\vquic\curl_quiche.h" />
+    <ClInclude Include="curl\lib\vquic\vquic_int.h" />
     <ClInclude Include="curl\lib\vtls\hostcheck.h" />
     <ClInclude Include="curl\lib\vtls\rustls.h" />
     <ClInclude Include="curl\lib\vtls\x509asn1.h" />
     <ClInclude Include="curl\lib\warnless.h" />
-    <ClInclude Include="curl\lib\wildcard.h" />
     <ClInclude Include="curl\lib\vauth\digest.h" />
     <ClInclude Include="curl\lib\vauth\ntlm.h" />
     <ClInclude Include="curl\lib\vauth\vauth.h" />
-    <ClInclude Include="curl\lib\vquic\ngtcp2.h" />
-    <ClInclude Include="curl\lib\vquic\quiche.h" />
     <ClInclude Include="curl\lib\vquic\vquic.h" />
     <ClInclude Include="curl\lib\vssh\ssh.h" />
     <ClInclude Include="curl\lib\vssh\wolfssh.h" />
     <ClInclude Include="curl\lib\vtls\bearssl.h" />
-    <ClInclude Include="curl\lib\vtls\gskit.h" />
     <ClInclude Include="curl\lib\vtls\gtls.h" />
     <ClInclude Include="curl\lib\vtls\keylog.h" />
     <ClInclude Include="curl\lib\vtls\mbedtls.h" />
     <ClInclude Include="curl\lib\vtls\mbedtls_threadlock.h" />
-    <ClInclude Include="curl\lib\vtls\nssg.h" />
     <ClInclude Include="curl\lib\vtls\openssl.h" />
     <ClInclude Include="curl\lib\vtls\schannel.h" />
     <ClInclude Include="curl\lib\vtls\sectransp.h" />

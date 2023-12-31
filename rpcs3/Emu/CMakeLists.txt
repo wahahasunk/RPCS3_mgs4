@@ -1,5 +1,6 @@
-add_library(rpcs3_emu
+add_library(rpcs3_emu STATIC
     cache_utils.cpp
+    games_config.cpp
     IdManager.cpp
     localized_string.cpp
     savestate_utils.cpp
@@ -18,8 +19,9 @@ add_library(rpcs3_emu
     IPC_socket.cpp
 )
 
-# prevent WolfSSL from warning about not having harden options
-add_compile_definitions(WC_NO_HARDEN)
+if(USE_ASAN)
+    set_source_files_properties(../../Utilities/Thread.cpp PROPERTIES COMPILE_DEFINITIONS USE_ASAN)
+endif()
 
 target_link_libraries(rpcs3_emu
     PRIVATE
@@ -35,7 +37,7 @@ target_link_libraries(rpcs3_emu
 # For stdafx.h
 target_include_directories(rpcs3_emu
     PUBLIC
-        ${RPCS3_SRC_DIR})
+        ${PROJECT_SOURCE_DIR}/rpcs3)
 
 # Utilities
 target_sources(rpcs3_emu PRIVATE
@@ -48,6 +50,7 @@ target_sources(rpcs3_emu PRIVATE
     ../util/dyn_lib.cpp
     ../util/sysinfo.cpp
     ../util/cpu_stats.cpp
+    ../util/serialization_ext.cpp
     ../../Utilities/bin_patch.cpp
     ../../Utilities/cheat_info.cpp
     ../../Utilities/cond.cpp
@@ -77,15 +80,27 @@ target_link_libraries(rpcs3_emu
         3rdparty::pugixml)
 
 if(MSVC)
-    set_source_files_properties("../../Utilities/JIT.cpp" PROPERTIES COMPILE_FLAGS /GR-)
+    set_source_files_properties("../../Utilities/JIT.cpp" PROPERTIES
+        COMPILE_FLAGS /GR-
+        SKIP_PRECOMPILE_HEADERS ON
+    )
 else()
-    set_source_files_properties("../../Utilities/JIT.cpp" PROPERTIES COMPILE_FLAGS -fno-rtti)
+    set_source_files_properties("../../Utilities/JIT.cpp" PROPERTIES
+        COMPILE_FLAGS -fno-rtti
+        SKIP_PRECOMPILE_HEADERS ON
+    )
 endif()
 
 if(MSVC)
-    set_source_files_properties("../util/yaml.cpp" PROPERTIES COMPILE_FLAGS /EHsc)
+    set_source_files_properties("../util/yaml.cpp" PROPERTIES
+        COMPILE_FLAGS /EHsc
+        SKIP_PRECOMPILE_HEADERS ON
+    )
 else()
-    set_source_files_properties("../util/yaml.cpp" PROPERTIES COMPILE_FLAGS -fexceptions)
+    set_source_files_properties("../util/yaml.cpp" PROPERTIES
+        COMPILE_FLAGS -fexceptions
+        SKIP_PRECOMPILE_HEADERS ON
+    )
 endif()
 
 # Crypto
@@ -102,6 +117,7 @@ target_sources(rpcs3_emu PRIVATE
     ../Crypto/unedat.cpp
     ../Crypto/unpkg.cpp
     ../Crypto/unself.cpp
+    ../Crypto/unzip.cpp
     ../Crypto/utils.cpp
 )
 
@@ -138,13 +154,18 @@ if(USE_FAUDIO)
 endif()
 
 if(WIN32)
-    target_include_directories(rpcs3_emu PUBLIC "${RPCS3_SRC_DIR}/../3rdparty/XAudio2Redist/include")
-    target_link_libraries(rpcs3_emu PRIVATE "${RPCS3_SRC_DIR}/../3rdparty/XAudio2Redist/libs/xaudio2_9redist.lib")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /DELAYLOAD:xaudio2_9redist.dll")
+    target_include_directories(rpcs3_emu PUBLIC "${PROJECT_SOURCE_DIR}/3rdparty/XAudio2Redist/include")
+    if(MSVC)
+        target_link_libraries(rpcs3_emu PRIVATE "${PROJECT_SOURCE_DIR}/3rdparty/XAudio2Redist/libs/xaudio2_9redist.lib")
+        target_link_options(rpcs3_emu PRIVATE /DELAYLOAD:xaudio2_9redist.dll)
+    else()
+        target_link_libraries(rpcs3_emu PRIVATE xaudio2_8)
+    endif()
     target_sources(rpcs3_emu PRIVATE
         Audio/XAudio2/XAudio2Backend.cpp
         Audio/XAudio2/xaudio2_enumerator.cpp
     )
+    target_compile_definitions(rpcs3_emu PRIVATE UNICODE _UNICODE _WIN32_WINNT=0x0602)
 endif()
 
 target_link_libraries(rpcs3_emu
@@ -365,7 +386,10 @@ target_sources(rpcs3_emu PRIVATE
 )
 
 if(NOT MSVC)
-    set_source_files_properties(Cell/PPUTranslator.cpp PROPERTIES COMPILE_FLAGS -fno-rtti)
+    set_source_files_properties(Cell/PPUTranslator.cpp PROPERTIES
+        COMPILE_FLAGS -fno-rtti
+        SKIP_PRECOMPILE_HEADERS ON
+    )
 endif()
 
 target_link_libraries(rpcs3_emu
@@ -392,13 +416,22 @@ target_sources(rpcs3_emu PRIVATE
     Io/pad_config.cpp
     Io/pad_config_types.cpp
     Io/PadHandler.cpp
+    Io/pad_types.cpp
     Io/usb_device.cpp
     Io/usb_vfs.cpp
+    Io/Infinity.cpp
     Io/Skylander.cpp
     Io/GHLtar.cpp
+    Io/midi_config_types.cpp
+    Io/RB3MidiKeyboard.cpp
+    Io/RB3MidiGuitar.cpp
     Io/Buzz.cpp
     Io/Turntable.cpp
     Io/usio.cpp
+)
+
+target_link_libraries(rpcs3_emu PRIVATE
+    3rdparty::rtmidi
 )
 
 # Np
@@ -442,6 +475,7 @@ target_sources(rpcs3_emu PRIVATE
     RSX/Common/surface_store.cpp
     RSX/Common/TextureUtils.cpp
     RSX/Common/texture_cache.cpp
+    RSX/Core/RSXContext.cpp
     RSX/Null/NullGSRender.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu_components.cpp
@@ -453,6 +487,7 @@ target_sources(rpcs3_emu PRIVATE
     RSX/Overlays/overlay_animation.cpp
     RSX/Overlays/overlay_controls.cpp
     RSX/Overlays/overlay_cursor.cpp
+    RSX/Overlays/overlay_debug_overlay.cpp
     RSX/Overlays/overlay_edit_text.cpp
     RSX/Overlays/overlay_fonts.cpp
     RSX/Overlays/overlay_list_view.cpp
@@ -566,23 +601,12 @@ target_link_libraries(rpcs3_emu
 
 if(APPLE)
     check_function_exists(clock_gettime HAVE_CLOCK_GETTIME)
-    if (${HAVE_CLOCK_GETTIME})
+    if (HAVE_CLOCK_GETTIME)
         target_compile_definitions(rpcs3_emu PUBLIC -DHAVE_CLOCK_GETTIME)
     endif()
 endif()
 
 
 if(USE_PRECOMPILED_HEADERS)
-    if(COMMAND target_precompile_headers)
-        target_precompile_headers(rpcs3_emu PRIVATE "${RPCS3_SRC_DIR}/stdafx.h")
-    else()
-        # Setup cotire
-        option(UNITY_BUILD_EMU "Use unity build for rpcs3_emu target" OFF)
-
-        set_target_properties(rpcs3_emu PROPERTIES
-            COTIRE_CXX_PREFIX_HEADER_INIT "${RPCS3_SRC_DIR}/stdafx.h"
-            COTIRE_ADD_UNITY_BUILD ${UNITY_BUILD_EMU})
-
-        cotire(rpcs3_emu)
-    endif()
+    target_precompile_headers(rpcs3_emu PRIVATE "${PROJECT_SOURCE_DIR}/rpcs3/stdafx.h")
 endif()

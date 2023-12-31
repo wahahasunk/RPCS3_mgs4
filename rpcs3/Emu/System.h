@@ -2,6 +2,9 @@
 
 #include "util/types.hpp"
 #include "util/atomic.hpp"
+#include "Utilities/bit_set.h"
+#include "config_mode.h"
+#include "games_config.h"
 #include <functional>
 #include <memory>
 #include <string>
@@ -12,20 +15,13 @@
 
 void init_fxo_for_exec(utils::serial*, bool);
 
-struct progress_dialog_workaround
-{
-	// WORKAROUND:
-	// We don't want to show the native dialog during gameplay.
-	// This can currently interfere with cell dialogs.
-	atomic_t<bool> skip_the_progress_dialog = false;
-};
-
 enum class localized_string_id;
 enum class video_renderer;
 
 enum class system_state : u32
 {
 	stopped,
+	stopping,
 	running,
 	paused,
 	frozen, // paused but cannot resume
@@ -48,6 +44,7 @@ enum class game_boot_result : u32
 	unsupported_disc_type,
 	savestate_corrupted,
 	savestate_version_unsupported,
+	still_running,
 };
 
 constexpr bool is_error(game_boot_result res)
@@ -55,25 +52,16 @@ constexpr bool is_error(game_boot_result res)
 	return res != game_boot_result::no_errors;
 }
 
-enum class cfg_mode
-{
-	custom,           // Prefer regular custom config. Fall back to global config.
-	custom_selection, // Use user-selected custom config. Fall back to global config.
-	global,           // Use global config.
-	config_override,  // Use config override. This does not use the global VFS settings! Fall back to global config.
-	continuous,       // Use same config as on last boot. Fall back to global config.
-	default_config    // Use the default values of the config entries.
-};
-
 struct EmuCallbacks
 {
-	std::function<void(std::function<void()>, atomic_t<bool>*)> call_from_main_thread;
+	std::function<void(std::function<void()>, atomic_t<u32>*)> call_from_main_thread;
 	std::function<void(bool)> on_run; // (start_playtime) continuing or going ingame, so start the clock
 	std::function<void()> on_pause;
 	std::function<void()> on_resume;
 	std::function<void()> on_stop;
 	std::function<void()> on_ready;
 	std::function<bool()> on_missing_fw;
+	std::function<void(std::shared_ptr<atomic_t<bool>>, int)> on_emulation_stop_no_response;
 	std::function<void(bool enabled)> enable_disc_eject;
 	std::function<void(bool enabled)> enable_disc_insert;
 	std::function<bool(bool, std::function<void()>)> try_to_quit; // (force_quit, on_exit) Try to close RPCS3
@@ -101,6 +89,9 @@ struct EmuCallbacks
 	std::function<bool(const std::string&, std::string&, s32&, s32&, s32&)> get_image_info; // (filename, sub_type, width, height, CellSearchOrientation)
 	std::function<bool(const std::string&, s32, s32, s32&, s32&, u8*, bool)> get_scaled_image; // (filename, target_width, target_height, width, height, dst, force_fit)
 	std::string(*resolve_path)(std::string_view) = [](std::string_view arg){ return std::string{arg}; }; // Resolve path using Qt
+	std::function<std::vector<std::string>()> get_font_dirs;
+	std::function<bool(const std::vector<std::string>&)> on_install_pkgs;
+	std::function<void(u32)> add_breakpoint;
 };
 
 namespace utils
@@ -116,7 +107,10 @@ class Emulator final
 
 	atomic_t<u64> m_pause_start_time{0}; // set when paused
 	atomic_t<u64> m_pause_amend_time{0}; // increased when resumed
-	atomic_t<u64> m_stop_ctr{0}; // Increments when emulation is stopped
+	atomic_t<u64> m_stop_ctr{1}; // Increments when emulation is stopped
+	atomic_t<bool> m_savestate_pending = false;
+
+	games_config m_games_config;
 
 	video_renderer m_default_renderer;
 	std::string m_default_graphics_adapter;
@@ -125,6 +119,7 @@ class Emulator final
 	std::string m_config_path;
 	std::string m_path;
 	std::string m_path_old;
+	std::string m_path_original;
 	std::string m_title_id;
 	std::string m_title;
 	std::string m_app_version;
@@ -146,6 +141,8 @@ class Emulator final
 
 	bool m_state_inspection_savestate = false;
 
+	usz m_tty_file_init_pos = umax;
+
 	std::vector<std::shared_ptr<atomic_t<u32>>> m_pause_msgs_refs;
 
 	std::vector<std::function<void()>> deferred_deserialization;
@@ -157,6 +154,16 @@ class Emulator final
 			func();
 		}
 	}
+
+	enum class SaveStateExtentionFlags1 : u8
+	{
+		SupportsMenuOpenResume,
+		ShouldCloseMenu,
+
+		__bitset_enum_max,
+	};
+
+	bs_t<SaveStateExtentionFlags1> m_savestate_extension_flags1{};
 
 public:
 	static constexpr std::string_view game_id_boot_prefix = "%RPCS3_GAMEID%:";
@@ -175,14 +182,15 @@ public:
 	}
 
 	// Call from the GUI thread
-	void CallFromMainThread(std::function<void()>&& func, atomic_t<bool>* wake_up = nullptr, bool track_emu_state = true, u64 stop_ctr = umax) const;
+	void CallFromMainThread(std::function<void()>&& func, atomic_t<u32>* wake_up = nullptr, bool track_emu_state = true, u64 stop_ctr = umax) const;
 
 	// Blocking call from the GUI thread
 	void BlockingCallFromMainThread(std::function<void()>&& func) const;
 
 	enum class stop_counter_t : u64{};
 
-	stop_counter_t ProcureCurrentEmulationCourseInformation() const
+	// Returns a different value each time we start a new emulation.
+	stop_counter_t GetEmulationIdentifier() const
 	{
 		return stop_counter_t{+m_stop_ctr};
 	}
@@ -205,7 +213,7 @@ public:
 		m_state = system_state::running;
 	}
 
-	void Init(bool add_only = false);
+	void Init();
 
 	std::vector<std::string> argv;
 	std::vector<std::string> envp;
@@ -214,6 +222,7 @@ public:
 	std::string disc;
 	std::string hdd1;
 	std::function<void(u32)> init_mem_containers;
+	std::function<void()> after_kill_callback;
 
 	u32 m_boot_source_type = 0; // CELL_GAME_GAMETYPE_SYS
 
@@ -225,6 +234,11 @@ public:
 	const std::string& GetBoot() const
 	{
 		return m_path;
+	}
+
+	const std::string& GetLastBoot() const
+	{
+		return m_path_original;
 	}
 
 	const std::string& GetTitleID() const
@@ -274,6 +288,11 @@ public:
 		return m_usr;
 	}
 
+	const games_config& GetGamesConfig() const
+	{
+		return m_games_config;
+	}
+
 	// Get deserialization manager
 	utils::serial* DeserialManager() const;
 
@@ -297,31 +316,43 @@ public:
 		return m_config_path;
 	}
 
-	game_boot_result BootGame(const std::string& path, const std::string& title_id = "", bool direct = false, bool add_only = false, cfg_mode config_mode = cfg_mode::custom, const std::string& config_path = "");
+	bool IsChildProcess() const
+	{
+		return m_config_mode == cfg_mode::continuous;
+	}
+
+	game_boot_result BootGame(const std::string& path, const std::string& title_id = "", bool direct = false, cfg_mode config_mode = cfg_mode::custom, const std::string& config_path = "");
 	bool BootRsxCapture(const std::string& path);
 
 	void SetForceBoot(bool force_boot);
 
-	game_boot_result Load(const std::string& title_id = "", bool add_only = false, bool is_disc_patch = false);
+	game_boot_result Load(const std::string& title_id = "", bool is_disc_patch = false, usz recursion_count = 0);
 	void Run(bool start_playtime);
 	void RunPPU();
 	void FixGuestTime();
 	void FinalizeRunRequest();
 
+private:
+	struct savestate_stage
+	{
+		bool prepared = false;
+	};
+public:
+
 	bool Pause(bool freeze_emulation = false, bool show_resume_message = true);
 	void Resume();
 	void GracefulShutdown(bool allow_autoexit = true, bool async_op = false, bool savestate = false);
-	std::shared_ptr<utils::serial> Kill(bool allow_autoexit = true, bool savestate = false);
+	void Kill(bool allow_autoexit = true, bool savestate = false, savestate_stage* stage = nullptr);
 	game_boot_result Restart(bool graceful = true);
 	bool Quit(bool force_quit);
 	static void CleanUp();
 
 	bool IsRunning() const { return m_state == system_state::running; }
 	bool IsPaused()  const { return m_state >= system_state::paused; } // ready/starting are also considered paused by this function
-	bool IsStopped() const { return m_state == system_state::stopped; }
+	bool IsStopped() const { return m_state <= system_state::stopping; }
 	bool IsReady()   const { return m_state == system_state::ready; }
 	bool IsStarting() const { return m_state == system_state::starting; }
-	auto GetStatus(bool fixup = true) const { system_state state = m_state; return fixup && state == system_state::frozen ? system_state::paused : state; }
+	auto GetStatus(bool fixup = true) const { system_state state = m_state; return fixup && state == system_state::frozen ? system_state::paused : fixup && state == system_state::stopping ? system_state::stopped : state; }
 
 	bool HasGui() const { return m_has_gui; }
 	void SetHasGui(bool has_gui) { m_has_gui = has_gui; }
@@ -331,13 +362,16 @@ public:
 
 	std::string GetFormattedTitle(double fps) const;
 
-	void ConfigurePPUCache() const;
+	void ConfigurePPUCache(bool with_title_id = true) const;
 
 	std::set<std::string> GetGameDirs() const;
 	void AddGamesFromDir(const std::string& path);
+	game_boot_result AddGame(const std::string& path);
+	game_boot_result AddGameToYml(const std::string& path);
 
 	// Check if path is inside the specified directory
 	bool IsPathInsideDir(std::string_view path, std::string_view dir) const;
+	game_boot_result VerifyPathCasing(std::string_view path, std::string_view dir, bool from_dir) const;
 
 	void EjectDisc();
 	game_boot_result InsertDisc(const std::string& path);
@@ -347,6 +381,7 @@ public:
 	friend void init_fxo_for_exec(utils::serial*, bool);
 
 	static bool IsVsh();
+	static bool IsValidSfb(const std::string& path);
 
 	static void SaveSettings(const std::string& settings, const std::string& title_id);
 };

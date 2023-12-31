@@ -1,3 +1,4 @@
+#include "stdafx.h"
 #include "microphone_creator.h"
 
 #include "Utilities/StrFmt.h"
@@ -5,12 +6,11 @@
 
 #include "3rdparty/OpenAL/include/alext.h"
 
-constexpr auto qstr = QString::fromStdString;
+LOG_CHANNEL(cfg_log, "CFG");
 
 microphone_creator::microphone_creator()
 {
 	setObjectName("microphone_creator");
-	refresh_list();
 }
 
 // We need to recreate the localized string because the microphone creator is currently only created once.
@@ -26,11 +26,11 @@ void microphone_creator::refresh_list()
 
 	if (alcIsExtensionPresent(nullptr, "ALC_ENUMERATION_EXT") == AL_TRUE)
 	{
-		if (const char* devices = alcGetString(nullptr, ALC_CAPTURE_DEVICE_SPECIFIER); devices != nullptr)
+		if (const char* devices = alcGetString(nullptr, ALC_CAPTURE_DEVICE_SPECIFIER))
 		{
 			while (*devices != 0)
 			{
-				m_microphone_list.append(qstr(devices));
+				m_microphone_list.append(devices);
 				devices += strlen(devices) + 1;
 			}
 		}
@@ -38,9 +38,11 @@ void microphone_creator::refresh_list()
 	else
 	{
 		// Without enumeration we can only use one device
-		if (const char* device = alcGetString(nullptr, ALC_DEFAULT_DEVICE_SPECIFIER); device != nullptr)
+		cfg_log.error("OpenAl extension ALC_ENUMERATION_EXT not supported. The microphone list will only contain the default microphone.");
+
+		if (const char* device = alcGetString(nullptr, ALC_DEFAULT_DEVICE_SPECIFIER))
 		{
-			m_microphone_list.append(qstr(device));
+			m_microphone_list.append(device);
 		}
 	}
 }
@@ -69,13 +71,10 @@ std::string microphone_creator::set_device(u32 num, const QString& text)
 
 void microphone_creator::parse_devices(const std::string& list)
 {
-	for (u32 index = 0; index < 4; index++)
-	{
-		m_sel_list[index] = "";
-	}
+	m_sel_list = {};
 
-	const auto devices_list = fmt::split(list, { "@@@" });
-	for (u32 index = 0; index < std::min<u32>(4, ::size32(devices_list)); index++)
+	const std::vector<std::string> devices_list = fmt::split(list, { "@@@" });
+	for (usz index = 0; index < std::min(m_sel_list.size(), devices_list.size()); index++)
 	{
 		m_sel_list[index] = devices_list[index];
 	}

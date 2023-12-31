@@ -15,8 +15,6 @@
 
 #include "util/fnv_hash.hpp"
 
-#define VK_OVERLAY_MAX_DRAW_CALLS 1024
-
 namespace vk
 {
 	overlay_pass::overlay_pass()
@@ -49,26 +47,26 @@ namespace vk
 
 	void overlay_pass::init_descriptors()
 	{
-		std::vector<VkDescriptorPoolSize> descriptor_pool_sizes =
+		rsx::simple_array<VkDescriptorPoolSize> descriptor_pool_sizes =
 		{
-			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_OVERLAY_MAX_DRAW_CALLS }
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 }
 		};
 
 		if (m_num_usable_samplers)
 		{
-			descriptor_pool_sizes.push_back({ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_OVERLAY_MAX_DRAW_CALLS * m_num_usable_samplers });
+			descriptor_pool_sizes.push_back({ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_num_usable_samplers });
 		}
 
 		if (m_num_input_attachments)
 		{
-			descriptor_pool_sizes.push_back({ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_OVERLAY_MAX_DRAW_CALLS * m_num_input_attachments });
+			descriptor_pool_sizes.push_back({ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, m_num_input_attachments });
 		}
 
 		// Reserve descriptor pools
-		m_descriptor_pool.create(*m_device, descriptor_pool_sizes.data(), ::size32(descriptor_pool_sizes), VK_OVERLAY_MAX_DRAW_CALLS, 2);
+		m_descriptor_pool.create(*m_device, descriptor_pool_sizes);
 
 		const auto num_bindings = 1 + m_num_usable_samplers + m_num_input_attachments;
-		std::vector<VkDescriptorSetLayoutBinding> bindings(num_bindings);
+		rsx::simple_array<VkDescriptorSetLayoutBinding> bindings(num_bindings);
 
 		bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 		bindings[0].descriptorCount = 1;
@@ -222,16 +220,7 @@ namespace vk
 		else
 			program = build_pipeline(key, pass);
 
-		ensure(m_used_descriptors < VK_OVERLAY_MAX_DRAW_CALLS);
-
-		VkDescriptorSetAllocateInfo alloc_info = {};
-		alloc_info.descriptorPool = m_descriptor_pool;
-		alloc_info.descriptorSetCount = 1;
-		alloc_info.pSetLayouts = &m_descriptor_layout;
-		alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-
-		CHECK_RESULT(vkAllocateDescriptorSets(*m_device, &alloc_info, m_descriptor_set.ptr()));
-		m_used_descriptors++;
+		m_descriptor_set = m_descriptor_pool.allocate(m_descriptor_layout);
 
 		if (!m_sampler && !src.empty())
 		{
@@ -288,12 +277,7 @@ namespace vk
 
 	void overlay_pass::free_resources()
 	{
-		if (m_used_descriptors == 0)
-			return;
-
-		m_descriptor_pool.reset(0);
-		m_used_descriptors = 0;
-
+		// FIXME: Allocation sizes are known, we don't need to use a data_heap structure
 		m_vao.reset_allocation_stats();
 		m_ubo.reset_allocation_stats();
 	}
@@ -387,7 +371,7 @@ namespace vk
 	}
 
 	vk::image_view* ui_overlay_renderer::upload_simple_texture(vk::render_device& dev, vk::command_buffer& cmd,
-		vk::data_heap& upload_heap, u64 key, u32 w, u32 h, u32 layers, bool font, bool temp, void* pixel_src, u32 owner_uid)
+		vk::data_heap& upload_heap, u64 key, u32 w, u32 h, u32 layers, bool font, bool temp, const void* pixel_src, u32 owner_uid)
 	{
 		const VkFormat format = (font) ? VK_FORMAT_R8_UNORM : VK_FORMAT_B8G8R8A8_UNORM;
 		const u32 pitch = (font) ? w : w * 4;
@@ -517,8 +501,7 @@ namespace vk
 		}
 
 		// Create font resource
-		std::vector<u8> bytes;
-		font->get_glyph_data(bytes);
+		const std::vector<u8> bytes = font->get_glyph_data();
 
 		return upload_simple_texture(cmd.get_command_pool().get_owner(), cmd, upload_heap, key, image_size.width, image_size.height, image_size.depth,
 				true, false, bytes.data(), -1);
@@ -585,6 +568,8 @@ namespace vk
 			.get();
 		push_buf[16] = std::bit_cast<f32>(vert_config);
 
+		vkCmdPushConstants(cmd, m_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 68, push_buf);
+
 		// 2. Fragment stuff
 		rsx::overlays::fragment_options frag_opts;
 		const auto frag_config = frag_opts
@@ -593,11 +578,11 @@ namespace vk
 			.pulse_glow(m_pulse_glow)
 			.get();
 
-		push_buf[17] = std::bit_cast<f32>(frag_config);
-		push_buf[18] = m_time;
-		push_buf[19] = m_blur_strength;
+		push_buf[0] = std::bit_cast<f32>(frag_config);
+		push_buf[1] = m_time;
+		push_buf[2] = m_blur_strength;
 
-		vkCmdPushConstants(cmd, m_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 80, push_buf);
+		vkCmdPushConstants(cmd, m_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 68, 12, push_buf);
 	}
 
 	void ui_overlay_renderer::set_primitive_type(rsx::overlays::primitive_type type)
@@ -891,23 +876,64 @@ namespace vk
 			"layout(location=0) in vec2 tc0;\n"
 			"layout(location=0) out vec4 ocol;\n"
 			"\n"
+			"#define STEREO_MODE_DISABLED 0\n"
+			"#define STEREO_MODE_ANAGLYPH 1\n"
+			"#define STEREO_MODE_SIDE_BY_SIDE 2\n"
+			"#define STEREO_MODE_OVER_UNDER 3\n"
+			"\n"
+			"vec2 sbs_single_matrix = vec2(2.0,0.4898f);\n"
+			"vec2 sbs_multi_matrix =  vec2(2.0,1.0);\n"
+			"vec2 ou_single_matrix =  vec2(1.0,0.9796f);\n"
+			"vec2 ou_multi_matrix =   vec2(1.0,2.0);\n"
+			"\n"
 			"layout(push_constant) uniform static_data\n"
 			"{\n"
 			"	float gamma;\n"
 			"	int limit_range;\n"
-			"	int stereo;\n"
+			"	int stereo_display_mode;\n"
 			"	int stereo_image_count;\n"
 			"};\n"
 			"\n"
 			"vec4 read_source()\n"
 			"{\n"
-			"	if (stereo == 0) return texture(fs0, tc0);\n"
+			"	if (stereo_display_mode == STEREO_MODE_DISABLED) return texture(fs0, tc0);\n"
 			"\n"
 			"	vec4 left, right;\n"
-			"	if (stereo_image_count == 2)\n"
+			"	if (stereo_image_count == 1)\n"
 			"	{\n"
-			"		left = texture(fs0, tc0);\n"
-			"		right = texture(fs1, tc0);\n"
+			"		switch (stereo_display_mode)\n"
+			"		{\n"
+			"			case STEREO_MODE_ANAGLYPH:\n"
+			"				left = texture(fs0, tc0 * vec2(1.f, 0.4898f));\n"
+			"				right = texture(fs0, (tc0 * vec2(1.f, 0.4898f)) + vec2(0.f, 0.510204f));\n"
+			"				return vec4(left.r, right.g, right.b, 1.f);\n"
+			"			case STEREO_MODE_SIDE_BY_SIDE:\n"
+			"				if (tc0.x < 0.5) return texture(fs0, tc0* sbs_single_matrix);\n"
+			"				else             return texture(fs0, (tc0* sbs_single_matrix) + vec2(-1.f, 0.510204f));\n"
+			"			case STEREO_MODE_OVER_UNDER:\n"
+			"				if (tc0.y < 0.5) return texture(fs0, tc0* ou_single_matrix);\n"
+			"				else             return texture(fs0, (tc0* ou_single_matrix) + vec2(0.f, 0.020408f) );\n"
+			"			default:\n" // undefined behavior
+			"				return texture(fs0,tc0);\n"
+			"		}\n"
+			"	}\n"
+			"	else if (stereo_image_count == 2)\n"
+			"	{\n"
+			"		switch (stereo_display_mode)\n"
+			"		{\n"
+			"			case STEREO_MODE_ANAGLYPH:\n"
+			"				left = texture(fs0, tc0);\n"
+			"				right = texture(fs1, tc0);\n"
+			"				return vec4(left.r, right.g, right.b, 1.f);\n"
+			"			case STEREO_MODE_SIDE_BY_SIDE:\n"
+			"				if (tc0.x < 0.5) return texture(fs0,(tc0 * sbs_multi_matrix));\n"
+			"				else             return texture(fs1,(tc0 * sbs_multi_matrix) + vec2(-1.f,0.f));\n"
+			"			case STEREO_MODE_OVER_UNDER:\n"
+			"				if (tc0.y < 0.5) return texture(fs0,(tc0 * ou_multi_matrix));\n"
+			"				else             return texture(fs1,(tc0 * ou_multi_matrix) + vec2(0.f,-1.f));\n"
+			"			default:\n" // undefined behavior
+			"				return texture(fs0,tc0);\n"
+			"		}\n"
 			"	}\n"
 			"	else\n"
 			"	{\n"
@@ -915,9 +941,8 @@ namespace vk
 			"		vec2 coord_right = coord_left + vec2(0.f, 0.510204f);\n"
 			"		left = texture(fs0, coord_left);\n"
 			"		right = texture(fs0, coord_right);\n"
+			"		return vec4(left.r, right.g, right.b, 1.);\n"
 			"	}\n"
-			"\n"
-			"	return vec4(left.r, right.g, right.b, 1.);\n"
 			"}\n"
 			"\n"
 			"void main()\n"
@@ -953,11 +978,11 @@ namespace vk
 	}
 
 	void video_out_calibration_pass::run(vk::command_buffer& cmd, const areau& viewport, vk::framebuffer* target,
-		const rsx::simple_array<vk::viewable_image*>& src, f32 gamma, bool limited_rgb, bool _3d, VkRenderPass render_pass)
+		const rsx::simple_array<vk::viewable_image*>& src, f32 gamma, bool limited_rgb, stereo_render_mode_options stereo_mode, VkRenderPass render_pass)
 	{
 		config.gamma = gamma;
 		config.limit_range = limited_rgb? 1 : 0;
-		config.stereo = _3d? 1 : 0;
+		config.stereo_display_mode = static_cast<u8>(stereo_mode);
 		config.stereo_image_count = std::min(::size32(src), 2u);
 
 		std::vector<vk::image_view*> views;

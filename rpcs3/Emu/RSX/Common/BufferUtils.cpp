@@ -126,8 +126,8 @@ namespace
 				c.emit(x86::Inst::kIdPsrlw, c.v0, 8);
 				c.emit(x86::Inst::kIdPsllw, c.v1, 8);
 				c.emit(x86::Inst::kIdPor, c.v0, c.v1);
-				c.emit(x86::Inst::kIdPshuflw, c.v0, c.v0, 0b01001110);
-				c.emit(x86::Inst::kIdPshufhw, c.v0, c.v0, 0b01001110);
+				c.emit(x86::Inst::kIdPshuflw, c.v0, c.v0, 0b10110001);
+				c.emit(x86::Inst::kIdPshufhw, c.v0, c.v0, 0b10110001);
 			}
 
 			if constexpr (Compare)
@@ -251,8 +251,8 @@ namespace
 
 					if constexpr (sizeof(T) == 4)
 					{
-						c.emit(x86::Inst::kIdPshuflw, c.v0, c.v0, 0b01001110);
-						c.emit(x86::Inst::kIdPshufhw, c.v0, c.v0, 0b01001110);
+						c.emit(x86::Inst::kIdPshuflw, c.v0, c.v0, 0b10110001);
+						c.emit(x86::Inst::kIdPshufhw, c.v0, c.v0, 0b10110001);
 					}
 				}
 
@@ -295,8 +295,8 @@ namespace
 			r = upload_untouched_naive(src.data(), dst.data(), count);
 #endif
 
-			min_index = r;
-			max_index = r >> 32;
+			min_index = static_cast<T>(r);
+			max_index = static_cast<T>(r >> 32);
 
 			return std::make_tuple(min_index, max_index, count);
 		}
@@ -353,8 +353,8 @@ namespace
 
 					if constexpr (sizeof(T) == 4)
 					{
-						c.emit(x86::Inst::kIdPshuflw, c.v0, c.v0, 0b01001110);
-						c.emit(x86::Inst::kIdPshufhw, c.v0, c.v0, 0b01001110);
+						c.emit(x86::Inst::kIdPshuflw, c.v0, c.v0, 0b10110001);
+						c.emit(x86::Inst::kIdPshufhw, c.v0, c.v0, 0b10110001);
 					}
 				}
 
@@ -401,8 +401,8 @@ namespace
 			r = upload_untouched_naive(src.data(), dst.data(), count, restart_index);
 #endif
 
-			min_index = r;
-			max_index = r >> 32;
+			min_index = static_cast<T>(r);
+			max_index = static_cast<T>(r >> 32);
 
 			return std::make_tuple(min_index, max_index, count);
 		}

@@ -7,6 +7,8 @@
 
 namespace vk
 {
+	extern void print_debug_markers();
+
 	void die_with_error(VkResult error_code, std::string message,
 		const char* file,
 		const char* func,
@@ -94,6 +96,9 @@ namespace vk
 		case VK_ERROR_INVALID_EXTERNAL_HANDLE_KHR:
 			error_message = "Invalid external handle (VK_ERROR_INVALID_EXTERNAL_HANDLE_KHR)";
 			break;
+		case VK_ERROR_FRAGMENTATION_EXT:
+			error_message = "Descriptor pool creation failed (VK_ERROR_FRAGMENTATION)";
+			break;
 		default:
 			error_message = fmt::format("Unknown Code (%Xh, %d)%s", static_cast<s32>(error_code), static_cast<s32>(error_code), src_loc{line, col, file, func});
 			break;
@@ -103,6 +108,8 @@ namespace vk
 		{
 		default:
 		case 0:
+			print_debug_markers();
+
 			if (!message.empty()) message += "\n\n";
 			fmt::throw_exception("%sAssertion Failed! Vulkan API call failed with unrecoverable error: %s%s", message, error_message, src_loc{line, col, file, func});
 		case 1:

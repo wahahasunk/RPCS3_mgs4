@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>611</width>
-    <height>272</height>
+    <height>319</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -110,9 +110,6 @@
               <kerning>true</kerning>
              </font>
             </property>
-            <property name="text">
-             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;RPCS3 is an open-source Sony PlayStation 3 emulator and debugger.&lt;br/&gt;It is written in C++ for Windows, Linux, FreeBSD and MacOS funded with &lt;a href=&quot;https://www.patreon.com/Nekotekina&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#0000ff;&quot;&gt;Patreon&lt;/span&gt;&lt;/a&gt;.&lt;br/&gt;Our developers and contributors are always working hard to ensure this project is the best that it can be.&lt;br/&gt;There are still plenty of implementations to make and optimizations to do.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
-            </property>
             <property name="textFormat">
              <enum>Qt::RichText</enum>
             </property>
@@ -155,9 +152,6 @@
          <kerning>true</kerning>
         </font>
        </property>
-       <property name="text">
-        <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;To get started, you must first install the &lt;span style=&quot; font-weight:600;&quot;&gt;PlayStation 3 firmware&lt;/span&gt;.&lt;br/&gt;Please refer to the &lt;a href=&quot;https://rpcs3.net/quickstart&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#0000ff;&quot;&gt;Quickstart&lt;/span&gt;&lt;/a&gt; guide found on the official website for further information.&lt;br/&gt;If you have any further questions, please refer to the &lt;a href=&quot;https://rpcs3.net/faq&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#0000ff;&quot;&gt;FAQ&lt;/span&gt;&lt;/a&gt;.&lt;br/&gt;Otherwise, further discussion and support can be found on the &lt;a href=&quot;https://forums.rpcs3.net&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#0000ff;&quot;&gt;Forums&lt;/span&gt;&lt;/a&gt; or on our &lt;a href=&quot;https://discord.me/RPCS3&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#0000ff;&quot;&gt;Discord&lt;/span&gt;&lt;/a&gt; server.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
-       </property>
        <property name="textFormat">
         <enum>Qt::RichText</enum>
        </property>
@@ -189,6 +183,40 @@
         <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
        </property>
       </widget>
+     </item>
+     <item>
+      <widget class="QCheckBox" name="create_desktop_shortcut">
+       <property name="text">
+        <string>Create desktop shortcut</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QCheckBox" name="create_applications_menu_shortcut">
+       <property name="text">
+        <string>Create Start Menu shortcut</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QCheckBox" name="use_dark_theme">
+       <property name="text">
+        <string>Use Dark Theme (Can Be Configured Later)</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="verticalSpacer">
+       <property name="orientation">
+        <enum>Qt::Vertical</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>20</width>
+         <height>10</height>
+        </size>
+       </property>
+      </spacer>
      </item>
      <item>
       <layout class="QHBoxLayout" name="button_layout">

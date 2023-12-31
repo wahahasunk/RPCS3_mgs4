@@ -786,20 +786,8 @@ error_code cellRtcGetTick(vm::cptr<CellRtcDateTime> pTime, vm::ptr<CellRtcTick> 
 	return CELL_OK;
 }
 
-error_code cellRtcSetTick(vm::ptr<CellRtcDateTime> pTime, vm::cptr<CellRtcTick> pTick)
+CellRtcDateTime tick_to_date_time(u64 tick)
 {
-	cellRtc.todo("cellRtcSetTick(pTime=*0x%x, pTick=*0x%x)", pTime, pTick);
-
-	if (!vm::check_addr(pTime.addr()))
-	{
-		return CELL_RTC_ERROR_INVALID_POINTER;
-	}
-
-	if (!vm::check_addr(pTick.addr()))
-	{
-		return CELL_RTC_ERROR_INVALID_POINTER;
-	}
-
 	/*
 	u32 microseconds = round((pTick->tick % 1000000ULL));
 	u16 seconds      = round((pTick->tick / (1000000ULL)) % 60);
@@ -807,11 +795,11 @@ error_code cellRtcSetTick(vm::ptr<CellRtcDateTime> pTime, vm::cptr<CellRtcTick> 
 	u16 hours        = round((pTick->tick / (60ULL * 60ULL * 1000000ULL)) % 24);
 	u64 days_tmp     = round((pTick->tick / (24ULL * 60ULL * 60ULL * 1000000ULL)));*/
 
-	u32 microseconds = (pTick->tick % 1000000ULL);
-	u16 seconds      = (pTick->tick / (1000000ULL)) % 60;
-	u16 minutes      = (pTick->tick / (60ULL * 1000000ULL)) % 60;
-	u16 hours        = (pTick->tick / (60ULL * 60ULL * 1000000ULL)) % 24;
-	u64 days_tmp     = (pTick->tick / (24ULL * 60ULL * 60ULL * 1000000ULL));
+	const u32 microseconds = (tick % 1000000ULL);
+	const u16 seconds      = (tick / (1000000ULL)) % 60;
+	const u16 minutes      = (tick / (60ULL * 1000000ULL)) % 60;
+	const u16 hours        = (tick / (60ULL * 60ULL * 1000000ULL)) % 24;
+	u64 days_tmp           = (tick / (24ULL * 60ULL * 60ULL * 1000000ULL));
 
 	u16 months = 1;
 	u16 years  = 1;
@@ -819,10 +807,10 @@ error_code cellRtcSetTick(vm::ptr<CellRtcDateTime> pTime, vm::cptr<CellRtcTick> 
 	bool exit_while = false;
 	do
 	{
-		bool leap = is_leap_year(years);
-		for (u32 m = 0; m <= 11; m++)
+		const bool leap = is_leap_year(years);
+		for (u32 m = 0; m < 12; m++)
 		{
-			u8 daysinmonth = DAYS_IN_MONTH[m + (leap * 12)];
+			const u8 daysinmonth = DAYS_IN_MONTH[m + (leap * 12)];
 			if (days_tmp >= daysinmonth)
 			{
 				months++;
@@ -842,13 +830,79 @@ error_code cellRtcSetTick(vm::ptr<CellRtcDateTime> pTime, vm::cptr<CellRtcTick> 
 
 	} while (!exit_while);
 
-	pTime->microsecond = microseconds;
-	pTime->second      = seconds;
-	pTime->minute      = minutes;
-	pTime->hour        = hours;
-	pTime->day         = ::narrow<u16>(days_tmp + 1);
-	pTime->month       = months;
-	pTime->year        = years;
+	CellRtcDateTime date_time{
+		.year        = years,
+		.month       = months,
+		.day         = ::narrow<u16>(days_tmp + 1),
+		.hour        = hours,
+		.minute      = minutes,
+		.second      = seconds,
+		.microsecond = microseconds
+	};
+	return date_time;
+}
+
+u64 date_time_to_tick(CellRtcDateTime date_time)
+{
+	const auto get_days_in_year = [](u16 year, u16 months) -> u64
+	{
+		const bool leap = is_leap_year(year);
+		u64 days = 0;
+		for (u16 m = 0; m < months; m++)
+		{
+			days += DAYS_IN_MONTH[m + (leap * 12)];
+		}
+		return days;
+	};
+
+	u64 days = 0;
+
+	if (date_time.day > 1)
+	{
+		// We only need the whole days before "this" day
+		days += date_time.day - 1ULL;
+	}
+
+	if (date_time.month > 1)
+	{
+		// We only need the whole months before "this" month
+		days += get_days_in_year(date_time.year, date_time.month - 1ULL);
+	}
+
+	if (date_time.year > 1)
+	{
+		// We only need the whole years before "this" year
+		// NOTE: tick_to_date_time starts counting with year 1, so count [1,n[ instead of [0,n-1[
+		for (u16 year = 1; year < date_time.year; year++)
+		{
+			days += get_days_in_year(year, 12);
+		}
+	}
+
+	u64 tick = date_time.microsecond
+	         + u64{date_time.second} * 1000000ULL
+	         + u64{date_time.minute} * 60ULL * 1000000ULL
+	         + u64{date_time.hour}   * 60ULL * 60ULL * 1000000ULL
+	         + days                  * 24ULL * 60ULL * 60ULL * 1000000ULL;
+
+	return tick;
+}
+
+error_code cellRtcSetTick(vm::ptr<CellRtcDateTime> pTime, vm::cptr<CellRtcTick> pTick)
+{
+	cellRtc.todo("cellRtcSetTick(pTime=*0x%x, pTick=*0x%x)", pTime, pTick);
+
+	if (!vm::check_addr(pTime.addr()))
+	{
+		return CELL_RTC_ERROR_INVALID_POINTER;
+	}
+
+	if (!vm::check_addr(pTick.addr()))
+	{
+		return CELL_RTC_ERROR_INVALID_POINTER;
+	}
+
+	*pTime = tick_to_date_time(pTick->tick);
 
 	return CELL_OK;
 }

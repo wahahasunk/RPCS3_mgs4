@@ -43,8 +43,8 @@
        <rect>
         <x>0</x>
         <y>0</y>
-        <width>838</width>
-        <height>641</height>
+        <width>821</width>
+        <height>716</height>
        </rect>
       </property>
       <property name="sizePolicy">
@@ -75,13 +75,6 @@
                 <widget class="QRadioButton" name="ppu__static">
                  <property name="text">
                   <string notr="true">Interpreter (static)</string>
-                 </property>
-                </widget>
-               </item>
-               <item>
-                <widget class="QRadioButton" name="ppu_dynamic">
-                 <property name="text">
-                  <string notr="true">Interpreter (dynamic)</string>
                  </property>
                 </widget>
                </item>
@@ -180,13 +173,6 @@
                 <widget class="QCheckBox" name="spuLoopDetection">
                  <property name="text">
                   <string>Enable SPU loop detection</string>
-                 </property>
-                </widget>
-               </item>
-               <item>
-                <widget class="QCheckBox" name="fullWidthAVX512">
-                 <property name="text">
-                  <string>Increase AVX-512 instruction width</string>
                  </property>
                 </widget>
                </item>
@@ -560,6 +546,18 @@
              </widget>
             </item>
             <item>
+             <widget class="QGroupBox" name="gb_stereo">
+              <property name="title">
+               <string>3D</string>
+              </property>
+              <layout class="QVBoxLayout" name="gb_stereo_layout">
+               <item>
+                <widget class="QComboBox" name="stereoRenderMode"/>
+               </item>
+              </layout>
+             </widget>
+            </item>
+            <item>
              <spacer name="gpu_tab_layout_right_spacer">
               <property name="orientation">
                <enum>Qt::Vertical</enum>
@@ -928,12 +926,6 @@
             </item>
             <item>
              <widget class="QGroupBox" name="gb_additional_settings">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
-                <horstretch>0</horstretch>
-                <verstretch>0</verstretch>
-               </sizepolicy>
-              </property>
               <property name="title">
                <string>Additional Settings</string>
               </property>
@@ -966,20 +958,6 @@
                 <widget class="QCheckBox" name="stretchToDisplayArea">
                  <property name="text">
                   <string>Stretch To Display Area</string>
-                 </property>
-                </widget>
-               </item>
-               <item>
-                <widget class="QCheckBox" name="Enable3D">
-                 <property name="text">
-                  <string>Enable 3D</string>
-                 </property>
-                </widget>
-               </item>
-               <item>
-                <widget class="QCheckBox" name="disableVertexCache">
-                 <property name="text">
-                  <string>Disable Vertex Cache</string>
                  </property>
                 </widget>
                </item>
@@ -1608,23 +1586,11 @@
        </attribute>
        <layout class="QVBoxLayout" name="inputTab_layout">
         <item>
-         <layout class="QGridLayout" name="ioGridLayout">
-          <item row="0" column="2">
-           <widget class="QGroupBox" name="gb_buzz_emulated">
-            <property name="title">
-             <string>Buzz! emulated controller</string>
-            </property>
-            <layout class="QVBoxLayout" name="gb_buzz_emulated_layout">
-             <item>
-              <widget class="QComboBox" name="buzzBox"/>
-             </item>
-            </layout>
-           </widget>
-          </item>
+         <layout class="QGridLayout" name="ioGridLayout" columnstretch="1,1,1">
           <item row="2" column="2">
            <widget class="QGroupBox" name="gb_ghltar_emulated">
             <property name="title">
-             <string>Guitar Hero Live emulated guitar</string>
+             <string>Guitar Hero Live Emulated Guitar</string>
             </property>
             <layout class="QVBoxLayout" name="gb_ghltar_emulated_layout">
              <item>
@@ -1633,14 +1599,14 @@
             </layout>
            </widget>
           </item>
-          <item row="3" column="1">
-           <widget class="QGroupBox" name="gb_camera_flip">
+          <item row="2" column="0">
+           <widget class="QGroupBox" name="gb_move_handler">
             <property name="title">
-             <string>Camera Flip</string>
+             <string>Move Handler</string>
             </property>
-            <layout class="QVBoxLayout" name="gb_camera_flip_layout">
+            <layout class="QVBoxLayout" name="gb_move_handler_layout">
              <item>
-              <widget class="QComboBox" name="cameraFlipBox"/>
+              <widget class="QComboBox" name="moveBox"/>
              </item>
             </layout>
            </widget>
@@ -1648,11 +1614,35 @@
           <item row="1" column="2">
            <widget class="QGroupBox" name="gb_turntable_emulated">
             <property name="title">
-             <string>DJ Hero emulated turntable</string>
+             <string>DJ Hero Emulated Turntable</string>
             </property>
             <layout class="QVBoxLayout" name="gb_turntable_emulated_layout">
              <item>
               <widget class="QComboBox" name="turntableBox"/>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QGroupBox" name="gb_mouse_handler">
+            <property name="title">
+             <string>Mouse Handler</string>
+            </property>
+            <layout class="QVBoxLayout" name="gb_mouse_handler_layout">
+             <item>
+              <widget class="QComboBox" name="mouseHandlerBox"/>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item row="0" column="2">
+           <widget class="QGroupBox" name="gb_buzz_emulated">
+            <property name="title">
+             <string>Buzz! Emulated Controller</string>
+            </property>
+            <layout class="QVBoxLayout" name="gb_buzz_emulated_layout">
+             <item>
+              <widget class="QComboBox" name="buzzBox"/>
              </item>
             </layout>
            </widget>
@@ -1681,14 +1671,26 @@
             </layout>
            </widget>
           </item>
-          <item row="1" column="0">
-           <widget class="QGroupBox" name="gb_mouse_handler">
+          <item row="0" column="1">
+           <widget class="QGroupBox" name="gb_camera_type">
             <property name="title">
-             <string>Mouse Handler</string>
+             <string>Camera Input</string>
             </property>
-            <layout class="QVBoxLayout" name="gb_mouse_handler_layout">
+            <layout class="QVBoxLayout" name="gb_camera_type_layout">
              <item>
-              <widget class="QComboBox" name="mouseHandlerBox"/>
+              <widget class="QComboBox" name="cameraTypeBox"/>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QGroupBox" name="gb_camera_flip">
+            <property name="title">
+             <string>Camera Flip</string>
+            </property>
+            <layout class="QVBoxLayout" name="gb_camera_flip_layout">
+             <item>
+              <widget class="QComboBox" name="cameraFlipBox"/>
              </item>
             </layout>
            </widget>
@@ -1705,30 +1707,6 @@
             </layout>
            </widget>
           </item>
-          <item row="0" column="1">
-           <widget class="QGroupBox" name="gb_camera_type">
-            <property name="title">
-             <string>Camera Input</string>
-            </property>
-            <layout class="QVBoxLayout" name="gb_camera_type_layout">
-             <item>
-              <widget class="QComboBox" name="cameraTypeBox"/>
-             </item>
-            </layout>
-           </widget>
-          </item>
-          <item row="2" column="0">
-           <widget class="QGroupBox" name="gb_move_handler">
-            <property name="title">
-             <string>Move Handler</string>
-            </property>
-            <layout class="QVBoxLayout" name="gb_move_handler_layout">
-             <item>
-              <widget class="QComboBox" name="moveBox"/>
-             </item>
-            </layout>
-           </widget>
-          </item>
           <item row="1" column="1">
            <widget class="QGroupBox" name="gb_camera_setting">
             <property name="title">
@@ -1741,7 +1719,64 @@
             </layout>
            </widget>
           </item>
-          <item row="4" column="0">
+          <item row="3" column="2">
+           <widget class="QGroupBox" name="gb_midi_1">
+            <property name="title">
+             <string>Emulated MIDI Device 1</string>
+            </property>
+            <layout class="QVBoxLayout" name="midLayout1">
+             <item>
+              <layout class="QHBoxLayout" name="midiHLayout1" stretch="1,2">
+               <item>
+                <widget class="QComboBox" name="midiTypeBox1"/>
+               </item>
+               <item>
+                <widget class="QComboBox" name="midiDeviceBox1"/>
+               </item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item row="6" column="2">
+           <widget class="QGroupBox" name="gb_midi_3">
+            <property name="title">
+             <string>Emulated MIDI Device 3</string>
+            </property>
+            <layout class="QVBoxLayout" name="midLayout3">
+             <item>
+              <layout class="QHBoxLayout" name="midiHLayout3" stretch="1,2">
+               <item>
+                <widget class="QComboBox" name="midiTypeBox3"/>
+               </item>
+               <item>
+                <widget class="QComboBox" name="midiDeviceBox3"/>
+               </item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item row="5" column="2">
+           <widget class="QGroupBox" name="gb_midi_2">
+            <property name="title">
+             <string>Emulated MIDI Device 2</string>
+            </property>
+            <layout class="QVBoxLayout" name="midLayout2">
+             <item>
+              <layout class="QHBoxLayout" name="midiHLayout2" stretch="1,2">
+               <item>
+                <widget class="QComboBox" name="midiTypeBox2"/>
+               </item>
+               <item>
+                <widget class="QComboBox" name="midiDeviceBox2"/>
+               </item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item row="5" column="0" rowspan="2">
            <widget class="QGroupBox" name="gb_additional_io_settings">
             <property name="title">
              <string>Additional Settings</string>
@@ -1755,11 +1790,48 @@
               </widget>
              </item>
              <item>
+              <widget class="QCheckBox" name="padConnectionBox">
+               <property name="text">
+                <string>Keep Pads Connected</string>
+               </property>
+              </widget>
+             </item>
+             <item>
               <widget class="QCheckBox" name="showMoveCursorBox">
                <property name="text">
                 <string>Show PS Move Cursor</string>
                </property>
               </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="lockOverlayInputToPlayerOne">
+               <property name="text">
+                <string>Lock Overlay Input To Player One</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="loadSdlMappings">
+               <property name="text">
+                <string>Use SDL GameController Database</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="verticalSpacerIoAdditionalSettings">
+               <property name="orientation">
+                <enum>Qt::Vertical</enum>
+               </property>
+               <property name="sizeType">
+                <enum>QSizePolicy::MinimumExpanding</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>0</width>
+                 <height>0</height>
+                </size>
+               </property>
+              </spacer>
              </item>
             </layout>
            </widget>
@@ -1975,7 +2047,7 @@
           <item>
            <widget class="QGroupBox" name="gb_DiskCacheClearing">
             <property name="title">
-             <string>Disk cache</string>
+             <string>Disk Cache</string>
             </property>
             <layout class="QVBoxLayout" name="gb_DiskCacheClearing_layout">
              <item>
@@ -2294,9 +2366,23 @@
                 </widget>
                </item>
                <item>
+                <widget class="QCheckBox" name="accurateGETLLAR">
+                 <property name="text">
+                  <string>Accurate GETLLAR</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
                 <widget class="QCheckBox" name="accurateRSXAccess">
                  <property name="text">
                   <string>Accurate RSX reservation access</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QCheckBox" name="accurateSpuDMA">
+                 <property name="text">
+                  <string>Accurate SPU DMA</string>
                  </property>
                 </widget>
                </item>
@@ -2308,20 +2394,6 @@
                 </widget>
                </item>
                <item>
-                <widget class="QCheckBox" name="accuratePPUSAT">
-                 <property name="text">
-                  <string>Accurate PPU Saturation Bit</string>
-                 </property>
-                </widget>
-               </item>
-               <item>
-                <widget class="QCheckBox" name="accuratePPUNJ">
-                 <property name="text">
-                  <string>Accurate PPU Non-Java Mode</string>
-                 </property>
-                </widget>
-               </item>
-               <item>
                 <widget class="QCheckBox" name="fixupPPUVNAN">
                  <property name="text">
                   <string>PPU Vector NaN Fixup</string>
@@ -2329,23 +2401,9 @@
                 </widget>
                </item>
                <item>
-                <widget class="QCheckBox" name="accuratePPUVNAN">
+                <widget class="QCheckBox" name="llvmPrecompilation">
                  <property name="text">
-                  <string>Accurate PPU Vector NaN Handling</string>
-                 </property>
-                </widget>
-               </item>
-               <item>
-                <widget class="QCheckBox" name="accuratePPUFPCC">
-                 <property name="text">
-                  <string>Accurate PPU Float Condition Control</string>
-                 </property>
-                </widget>
-               </item>
-               <item>
-                <widget class="QCheckBox" name="ppuPrecompilation">
-                 <property name="text">
-                  <string>PPU LLVM Precompilation</string>
+                  <string>PPU/SPU LLVM Precompilation</string>
                  </property>
                 </widget>
                </item>
@@ -2364,9 +2422,9 @@
                 </widget>
                </item>
                <item>
-                <widget class="QCheckBox" name="pausedSavestates">
+                <widget class="QCheckBox" name="compatibleSavestates">
                  <property name="text">
-                  <string>Start Savestates Paused</string>
+                  <string>SPU-Compatible Savestates Mode</string>
                  </property>
                 </widget>
                </item>
@@ -2572,9 +2630,23 @@
                 </widget>
                </item>
                <item>
+                <widget class="QCheckBox" name="handleTiledMemory">
+                 <property name="text">
+                  <string>Handle RSX memory tiling</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
                 <widget class="QCheckBox" name="disableOnDiskShaderCache">
                  <property name="text">
                   <string>Disable On-Disk Shader Cache</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QCheckBox" name="disableVertexCache">
+                 <property name="text">
+                  <string>Disable Vertex Cache</string>
                  </property>
                 </widget>
                </item>
@@ -2828,16 +2900,23 @@
                 </widget>
                </item>
                <item>
-                <widget class="QCheckBox" name="alwaysStart">
+                <widget class="QCheckBox" name="pauseOnFocusLoss">
                  <property name="text">
-                  <string>Automatically start games after boot</string>
+                  <string>Pause emulation on RPCS3 focus loss</string>
                  </property>
                 </widget>
                </item>
                <item>
-                <widget class="QCheckBox" name="startGameFullscreen">
+                <widget class="QCheckBox" name="pausedSavestates">
                  <property name="text">
-                  <string>Start games in Fullscreen mode</string>
+                  <string>Pause emulation after loading savestates</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QCheckBox" name="pauseDuringHomeMenu">
+                 <property name="text">
+                  <string>Pause emulation during home menu</string>
                  </property>
                 </widget>
                </item>
@@ -2856,9 +2935,9 @@
                 </widget>
                </item>
                <item>
-                <widget class="QCheckBox" name="useNativeInterface">
+                <widget class="QCheckBox" name="showPPUCompilationHint">
                  <property name="text">
-                  <string>Use native user interface</string>
+                  <string>Show PPU compilation hint</string>
                  </property>
                 </widget>
                </item>
@@ -2870,9 +2949,16 @@
                 </widget>
                </item>
                <item>
-                <widget class="QCheckBox" name="pauseDuringHomeMenu">
+                <widget class="QCheckBox" name="startGameFullscreen">
                  <property name="text">
-                  <string>Pause emulation during home menu</string>
+                  <string>Start games in fullscreen mode</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QCheckBox" name="useNativeInterface">
+                 <property name="text">
+                  <string>Use native user interface</string>
                  </property>
                 </widget>
                </item>
@@ -3818,6 +3904,13 @@
                 </widget>
                </item>
                <item>
+                <widget class="QCheckBox" name="cb_show_restart_hint">
+                 <property name="text">
+                  <string>Show Restart Dialog</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
                 <spacer name="guiTabSpacerRight">
                  <property name="orientation">
                   <enum>Qt::Vertical</enum>
@@ -3980,16 +4073,6 @@
             </property>
             <layout class="QVBoxLayout" name="gb_debug_gpu_layout">
              <item alignment="Qt::AlignTop">
-              <widget class="QCheckBox" name="renderdocCompatibility">
-               <property name="enabled">
-                <bool>true</bool>
-               </property>
-               <property name="text">
-                <string>Renderdoc Compatibility Mode</string>
-               </property>
-              </widget>
-             </item>
-             <item alignment="Qt::AlignTop">
               <widget class="QCheckBox" name="debugOutput">
                <property name="text">
                 <string>Debug Output</string>
@@ -4004,23 +4087,9 @@
               </widget>
              </item>
              <item>
-              <widget class="QCheckBox" name="logProg">
+              <widget class="QCheckBox" name="disableFIFOReordering">
                <property name="text">
-                <string>Log Shader Programs</string>
-               </property>
-              </widget>
-             </item>
-             <item alignment="Qt::AlignTop">
-              <widget class="QCheckBox" name="forceHighpZ">
-               <property name="text">
-                <string>Use High Precision Z-buffer</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QCheckBox" name="disableHwOcclusionQueries">
-               <property name="text">
-                <string>Disable ZCull Occlusion Queries</string>
+                <string>Disable FIFO Reordering</string>
                </property>
               </widget>
              </item>
@@ -4032,13 +4101,6 @@
               </widget>
              </item>
              <item>
-              <widget class="QCheckBox" name="forceCpuBlitEmulation">
-               <property name="text">
-                <string>Force CPU blit emulation</string>
-               </property>
-              </widget>
-             </item>
-             <item>
               <widget class="QCheckBox" name="disableVulkanMemAllocator">
                <property name="text">
                 <string>Disable Vulkan Memory Allocator</string>
@@ -4046,9 +4108,40 @@
               </widget>
              </item>
              <item>
-              <widget class="QCheckBox" name="disableFIFOReordering">
+              <widget class="QCheckBox" name="disableHwOcclusionQueries">
                <property name="text">
-                <string>Disable FIFO Reordering</string>
+                <string>Disable ZCull Occlusion Queries</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="forceCpuBlitEmulation">
+               <property name="text">
+                <string>Force CPU Blit Emulation</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="gpuTextureScaling">
+               <property name="text">
+                <string>Force GPU Texture Scaling</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="logProg">
+               <property name="text">
+                <string>Log Shader Programs</string>
+               </property>
+              </widget>
+             </item>
+             <item alignment="Qt::AlignTop">
+              <widget class="QCheckBox" name="renderdocCompatibility">
+               <property name="enabled">
+                <bool>true</bool>
+               </property>
+               <property name="text">
+                <string>Renderdoc Compatibility Mode</string>
                </property>
               </widget>
              </item>
@@ -4059,10 +4152,10 @@
                </property>
               </widget>
              </item>
-             <item>
-              <widget class="QCheckBox" name="gpuTextureScaling">
+             <item alignment="Qt::AlignTop">
+              <widget class="QCheckBox" name="forceHighpZ">
                <property name="text">
-                <string>Use GPU Texture Scaling</string>
+                <string>Use High Precision Z-Buffer</string>
                </property>
               </widget>
              </item>
@@ -4092,6 +4185,27 @@
             </property>
             <layout class="QVBoxLayout" name="gb_debug_core_layout">
              <item>
+              <widget class="QCheckBox" name="alwaysStart">
+               <property name="text">
+                <string>Automatically start games after boot</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="perfReport">
+               <property name="text">
+                <string>Enable performance report</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="hookStFunc">
+               <property name="text">
+                <string>Hook static functions</string>
+               </property>
+              </widget>
+             </item>
+             <item>
               <widget class="QCheckBox" name="ppuDebug">
                <property name="text">
                 <string>PPU Debug</string>
@@ -4120,16 +4234,30 @@
               </widget>
              </item>
              <item>
-              <widget class="QCheckBox" name="accurateGETLLAR">
+              <widget class="QCheckBox" name="accuratePPUSAT">
                <property name="text">
-                <string>Accurate GETLLAR</string>
+                <string>Accurate PPU Saturation Bit</string>
                </property>
               </widget>
              </item>
              <item>
-              <widget class="QCheckBox" name="accurateSpuDMA">
+              <widget class="QCheckBox" name="accuratePPUNJ">
                <property name="text">
-                <string>Accurate SPU DMA</string>
+                <string>Accurate PPU Non-Java Mode</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="accuratePPUVNAN">
+               <property name="text">
+                <string>Accurate PPU Vector NaN Handling</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="accuratePPUFPCC">
+               <property name="text">
+                <string>Accurate PPU Float Condition Control</string>
                </property>
               </widget>
              </item>
@@ -4137,20 +4265,6 @@
               <widget class="QCheckBox" name="accurateClineStores">
                <property name="text">
                 <string>Accurate Cache Line Stores</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QCheckBox" name="hookStFunc">
-               <property name="text">
-                <string>Hook static functions</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QCheckBox" name="perfReport">
-               <property name="text">
-                <string>Enable Performance Report</string>
                </property>
               </widget>
              </item>

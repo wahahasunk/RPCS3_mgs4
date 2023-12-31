@@ -14,7 +14,6 @@
 #include "VKTextureCache.h"
 #include "VKRenderTargets.h"
 #include "VKFormats.h"
-#include "VKTextOut.h"
 #include "VKOverlays.h"
 #include "VKProgramBuffer.h"
 #include "VKFramebuffer.h"
@@ -72,7 +71,6 @@ private:
 	std::unique_ptr<vk::buffer> null_buffer;
 	std::unique_ptr<vk::buffer_view> null_buffer_view;
 
-	std::unique_ptr<vk::text_writer> m_text_writer;
 	std::unique_ptr<vk::upscaler> m_upscaler;
 	output_scaling_mode m_output_scaling{output_scaling_mode::bilinear};
 
@@ -90,6 +88,9 @@ private:
 	std::unique_ptr<vk::buffer_view> m_persistent_attribute_storage;
 	std::unique_ptr<vk::buffer_view> m_volatile_attribute_storage;
 	std::unique_ptr<vk::buffer_view> m_vertex_layout_storage;
+
+	VkDependencyInfoKHR m_async_compute_dependency_info{};
+	VkMemoryBarrier2KHR m_async_compute_memory_barrier{};
 
 public:
 	//vk::fbo draw_fbo;
@@ -120,8 +121,9 @@ private:
 	volatile vk::host_data_t* m_host_data_ptr = nullptr;
 	std::unique_ptr<vk::buffer> m_host_object_data;
 
-	VkDescriptorSetLayout descriptor_layouts;
-	VkPipelineLayout pipeline_layout;
+	vk::descriptor_pool m_descriptor_pool;
+	VkDescriptorSetLayout m_descriptor_layouts;
+	VkPipelineLayout m_pipeline_layout;
 
 	vk::framebuffer_holder* m_draw_fbo = nullptr;
 
@@ -229,7 +231,6 @@ private:
 	void check_heap_status(u32 flags = VK_HEAP_CHECK_ALL);
 	void check_present_status();
 
-	void check_descriptors();
 	VkDescriptorSet allocate_descriptor_set();
 
 	vk::vertex_upload_info upload_vertex_data();
@@ -263,6 +264,9 @@ public:
 	// External callback to handle out of video memory problems
 	bool on_vram_exhausted(rsx::problem_severity severity);
 
+	// Handle pool creation failure due to fragmentation
+	void on_descriptor_pool_fragmentation(bool is_fatal);
+
 	// Conditional rendering
 	void begin_conditional_rendering(const std::vector<rsx::reports::occlusion_query_info*>& sources) override;
 	void end_conditional_rendering() override;
@@ -283,7 +287,7 @@ protected:
 	void renderctl(u32 request_code, void* args) override;
 
 	void do_local_task(rsx::FIFO::state state) override;
-	bool scaled_image_from_memory(rsx::blit_src_info& src, rsx::blit_dst_info& dst, bool interpolate) override;
+	bool scaled_image_from_memory(const rsx::blit_src_info& src, const rsx::blit_dst_info& dst, bool interpolate) override;
 	void notify_tile_unbound(u32 tile) override;
 
 	bool on_access_violation(u32 address, bool is_writing) override;

@@ -1,0 +1,102 @@
+{
+	"backtrace" : 4,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_custom_target",
+			"add_llvm_install_targets",
+			"add_llvm_library",
+			"add_llvm_component_library",
+			"add_dependencies"
+		],
+		"files" : 
+		[
+			"llvm/cmake/modules/AddLLVM.cmake",
+			"llvm/lib/Target/Sparc/MCTargetDesc/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 3,
+				"file" : 1,
+				"line" : 1,
+				"parent" : 0
+			},
+			{
+				"command" : 2,
+				"file" : 0,
+				"line" : 771,
+				"parent" : 1
+			},
+			{
+				"command" : 1,
+				"file" : 0,
+				"line" : 830,
+				"parent" : 2
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 721,
+				"parent" : 3
+			},
+			{
+				"command" : 4,
+				"file" : 0,
+				"line" : 731,
+				"parent" : 3
+			}
+		]
+	},
+	"dependencies" : 
+	[
+		{
+			"backtrace" : 5,
+			"id" : "LLVMSparcDesc::@bd6c64654a7337fd4ac3"
+		}
+	],
+	"id" : "install-LLVMSparcDesc-stripped::@bd6c64654a7337fd4ac3",
+	"name" : "install-LLVMSparcDesc-stripped",
+	"paths" : 
+	{
+		"build" : "3rdparty/llvm_build/lib/Target/Sparc/MCTargetDesc",
+		"source" : "llvm/lib/Target/Sparc/MCTargetDesc"
+	},
+	"sourceGroups" : 
+	[
+		{
+			"name" : "",
+			"sourceIndexes" : 
+			[
+				0
+			]
+		},
+		{
+			"name" : "CMake Rules",
+			"sourceIndexes" : 
+			[
+				1
+			]
+		}
+	],
+	"sources" : 
+	[
+		{
+			"backtrace" : 4,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Sparc/MCTargetDesc/CMakeFiles/install-LLVMSparcDesc-stripped",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/Sparc/MCTargetDesc/CMakeFiles/install-LLVMSparcDesc-stripped.rule",
+			"sourceGroupIndex" : 1
+		}
+	],
+	"type" : "UTILITY"
+}

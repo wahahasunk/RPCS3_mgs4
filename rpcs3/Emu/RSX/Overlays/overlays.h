@@ -3,6 +3,7 @@
 #include "overlay_controls.h"
 
 #include "Emu/IdManager.h"
+#include "Emu/Io/pad_types.h"
 
 #include "Utilities/mutex.h"
 #include "Utilities/Timer.h"
@@ -18,38 +19,6 @@ namespace rsx
 {
 	namespace overlays
 	{
-		enum pad_button : u8
-		{
-			dpad_up = 0,
-			dpad_down,
-			dpad_left,
-			dpad_right,
-			select,
-			start,
-			ps,
-			triangle,
-			circle,
-			square,
-			cross,
-			L1,
-			R1,
-			L2,
-			R2,
-			L3,
-			R3,
-
-			ls_up,
-			ls_down,
-			ls_left,
-			ls_right,
-			rs_up,
-			rs_down,
-			rs_left,
-			rs_right,
-
-			pad_button_max_enum
-		};
-
 		// Bitfield of UI signals to overlay manager
 		enum status_bits : u32
 		{
@@ -91,11 +60,12 @@ namespace rsx
 				interrupted = -4
 			};
 
+			static constexpr u64 m_auto_repeat_ms_interval_default = 200;
+
 		protected:
 			Timer m_input_timer;
-			static constexpr u64 m_auto_repeat_ms_interval_default = 200;
 			u64 m_auto_repeat_ms_interval = m_auto_repeat_ms_interval_default;
-			std::set<u8> m_auto_repeat_buttons = {
+			std::set<pad_button> m_auto_repeat_buttons = {
 				pad_button::dpad_up,
 				pad_button::dpad_down,
 				pad_button::dpad_left,
@@ -115,14 +85,14 @@ namespace rsx
 			bool m_start_pad_interception = true;
 			atomic_t<bool> m_stop_pad_interception = false;
 			atomic_t<bool> m_input_thread_detached = false;
-			atomic_t<u64> thread_bits = 0;
+			atomic_t<u32> thread_bits = 0;
 			bool m_keyboard_input_enabled = false; // Allow keyboard input
 			bool m_keyboard_pad_handler_active = true; // Initialized as true to prevent keyboard input until proven otherwise.
 			bool m_allow_input_on_pause = false;
 
-			static thread_local u64 g_thread_bit;
+			static thread_local u32 g_thread_bit;
 
-			u64 alloc_thread_bit();
+			u32 alloc_thread_bit();
 
 			std::function<void(s32 status)> on_close = nullptr;
 
@@ -144,7 +114,7 @@ namespace rsx
 
 			private:
 				user_interface* m_parent;
-				u64 m_thread_bit;
+				u32 m_thread_bit;
 			};
 		public:
 			s32 return_code = 0; // CELL_OK
@@ -156,12 +126,38 @@ namespace rsx
 
 			compiled_resource get_compiled() override = 0;
 
-			virtual void on_button_pressed(pad_button /*button_press*/) {}
+			virtual void on_button_pressed(pad_button /*button_press*/, bool /*is_auto_repeat*/) {}
 			virtual void on_key_pressed(u32 /*led*/, u32 /*mkey*/, u32 /*key_code*/, u32 /*out_key_code*/, bool /*pressed*/, std::u32string /*key*/) {}
 
 			virtual void close(bool use_callback, bool stop_pad_interception);
 
 			s32 run_input_loop(std::function<bool()> check_state = nullptr);
+		};
+
+		struct text_guard_t
+		{
+			std::mutex mutex;
+			std::string text;
+			bool dirty{false};
+
+			void set_text(std::string t)
+			{
+				std::lock_guard lock(mutex);
+				text = std::move(t);
+				dirty = true;
+			}
+
+			std::pair<bool, std::string> get_text()
+			{
+				if (dirty)
+				{
+					std::lock_guard lock(mutex);
+					dirty = false;
+					return { true, std::move(text) };
+				}
+
+				return { false, {} };
+			}
 		};
 	}
 }

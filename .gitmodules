@@ -4,12 +4,12 @@
 	ignore = dirty
 [submodule "asmjit"]
 	path = 3rdparty/asmjit/asmjit
-	url = ../../RPCS3/asmjit.git
-	branch = aarch64
+	url = ../../asmjit/asmjit.git
+	branch = master
 	ignore = dirty
-[submodule "llvm"]
-	path = llvm
-	url = ../../RPCS3/llvm-mirror.git
+[submodule "3rdparty/llvm/llvm"]
+	path = 3rdparty/llvm/llvm
+	url = ../../llvm/llvm-project.git
 	ignore = dirty
 [submodule "3rdparty/glslang"]
 	path = 3rdparty/glslang/glslang
@@ -83,4 +83,8 @@
 [submodule "3rdparty/miniupnp/miniupnp"]
 	path = 3rdparty/miniupnp/miniupnp
 	url = ../../miniupnp/miniupnp.git
+	ignore = dirty
+[submodule "3rdparty/rtmidi/rtmidi"]
+	path = 3rdparty/rtmidi/rtmidi
+	url = ../../thestk/rtmidi
 	ignore = dirty

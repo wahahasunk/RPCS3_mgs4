@@ -38,7 +38,7 @@ GLGSRender::GLGSRender(utils::serial* ar) noexcept : GSRender(ar)
 {
 	m_shaders_cache = std::make_unique<gl::shader_cache>(m_prog_buffer, "opengl", "v1.94");
 
-	if (g_cfg.video.disable_vertex_cache || g_cfg.video.multithreaded_rsx)
+	if (g_cfg.video.disable_vertex_cache)
 		m_vertex_cache = std::make_unique<gl::null_vertex_cache>();
 	else
 		m_vertex_cache = std::make_unique<gl::weak_vertex_cache>();
@@ -330,16 +330,16 @@ void GLGSRender::on_init_thread()
 		sampler.bind(image_unit++);
 	}
 
-	for (auto &sampler : m_fs_sampler_mirror_states)
-	{
-		sampler.create();
-		sampler.apply_defaults();
-		sampler.bind(image_unit++);
-	}
-
 	for (auto &sampler : m_vs_sampler_states)
 	{
 		sampler.create();
+		sampler.bind(image_unit++);
+	}
+
+	for (auto& sampler : m_fs_sampler_mirror_states)
+	{
+		sampler.create();
+		sampler.apply_defaults();
 		sampler.bind(image_unit++);
 	}
 
@@ -505,7 +505,6 @@ void GLGSRender::on_exit()
 	}
 
 	m_null_textures.clear();
-	m_text_printer.close();
 	m_gl_texture_cache.destroy();
 	m_ui_renderer.destroy();
 	m_video_output_pass.destroy();
@@ -546,7 +545,7 @@ void GLGSRender::clear_surface(u32 arg)
 
 	if (!m_graphics_state.test(rsx::rtt_config_valid)) return;
 
-	GLbitfield mask = 0;
+	gl::clear_cmd_info clear_cmd{};
 
 	gl::command_context cmd{ gl_state };
 	const bool full_frame =
@@ -565,26 +564,23 @@ void GLGSRender::clear_surface(u32 arg)
 			u32 max_depth_value = get_max_depth_value(surface_depth_format);
 			u32 clear_depth = rsx::method_registers.z_clear_value(is_depth_stencil_format(surface_depth_format));
 
-			gl_state.depth_mask(GL_TRUE);
-			gl_state.clear_depth(f32(clear_depth) / max_depth_value);
-			mask |= GLenum(gl::buffers::depth);
+			clear_cmd.clear_depth.value = f32(clear_depth) / max_depth_value;
+			clear_cmd.aspect_mask |= gl::image_aspect::depth;
 		}
 
 		if (is_depth_stencil_format(surface_depth_format))
 		{
 			if (arg & RSX_GCM_CLEAR_STENCIL_BIT)
 			{
-				u8 clear_stencil = rsx::method_registers.stencil_clear_value();
-
-				gl_state.stencil_mask(rsx::method_registers.stencil_mask());
-				gl_state.clear_stencil(clear_stencil);
-				mask |= GLenum(gl::buffers::stencil);
+				clear_cmd.clear_stencil.mask = rsx::method_registers.stencil_mask();
+				clear_cmd.clear_stencil.value = rsx::method_registers.stencil_clear_value();
+				clear_cmd.aspect_mask |= gl::image_aspect::stencil;
 			}
 
 			if (const auto ds_mask = (arg & RSX_GCM_CLEAR_DEPTH_STENCIL_MASK);
 				ds_mask != RSX_GCM_CLEAR_DEPTH_STENCIL_MASK || !full_frame)
 			{
-				ensure(mask);
+				ensure(clear_cmd.aspect_mask);
 
 				if (ds->state_flags & rsx::surface_state_flags::erase_bkgnd &&  // Needs initialization
 					ds->old_contents.empty() && !g_cfg.video.read_depth_buffer) // No way to load data from memory, so no initialization given
@@ -593,16 +589,15 @@ void GLGSRender::clear_surface(u32 arg)
 					if (ds_mask == RSX_GCM_CLEAR_DEPTH_BIT)
 					{
 						// Depth was cleared, initialize stencil
-						gl_state.stencil_mask(0xFF);
-						gl_state.clear_stencil(0xFF);
-						mask |= GLenum(gl::buffers::stencil);
+						clear_cmd.clear_stencil.mask = 0xff;
+						clear_cmd.clear_stencil.value = 0xff;
+						clear_cmd.aspect_mask |= gl::image_aspect::stencil;
 					}
 					else if (ds_mask == RSX_GCM_CLEAR_STENCIL_BIT)
 					{
 						// Stencil was cleared, initialize depth
-						gl_state.depth_mask(GL_TRUE);
-						gl_state.clear_depth(1.f);
-						mask |= GLenum(gl::buffers::depth);
+						clear_cmd.clear_depth.value = 1.f;
+						clear_cmd.aspect_mask |= gl::image_aspect::depth;
 					}
 				}
 				else
@@ -612,7 +607,7 @@ void GLGSRender::clear_surface(u32 arg)
 			}
 		}
 
-		if (mask)
+		if (clear_cmd.aspect_mask)
 		{
 			// Memory has been initialized
 			update_z = true;
@@ -679,18 +674,20 @@ void GLGSRender::clear_surface(u32 arg)
 
 		if (colormask)
 		{
-			gl_state.clear_color(clear_r, clear_g, clear_b, clear_a);
-			mask |= GLenum(gl::buffers::color);
+			clear_cmd.clear_color.mask = colormask;
+			clear_cmd.clear_color.attachment_count = static_cast<u8>(m_rtts.m_bound_render_target_ids.size());
+			clear_cmd.clear_color.r = clear_r;
+			clear_cmd.clear_color.g = clear_g;
+			clear_cmd.clear_color.b = clear_b;
+			clear_cmd.clear_color.a = clear_a;
+			clear_cmd.aspect_mask |= gl::image_aspect::color;
 
-			int hw_index = 0;
-			for (const auto& index : m_rtts.m_bound_render_target_ids)
+			if (!full_frame)
 			{
-				if (!full_frame)
+				for (const auto& index : m_rtts.m_bound_render_target_ids)
 				{
 					m_rtts.m_bound_render_targets[index].second->write_barrier(cmd);
 				}
-
-				gl_state.color_maski(hw_index++, colormask);
 			}
 
 			update_color = true;
@@ -707,7 +704,7 @@ void GLGSRender::clear_surface(u32 arg)
 		gl_state.enable(GL_SCISSOR_TEST);
 	}
 
-	glClear(mask);
+	gl::clear_attachments(cmd, clear_cmd);
 }
 
 bool GLGSRender::load_program()
@@ -869,10 +866,10 @@ void GLGSRender::load_program_env()
 	if (update_fragment_texture_env)
 	{
 		// Fragment texture parameters
-		auto mapping = m_texture_parameters_buffer->alloc_from_heap(512, m_uniform_buffer_offset_align);
+		auto mapping = m_texture_parameters_buffer->alloc_from_heap(768, m_uniform_buffer_offset_align);
 		current_fragment_program.texture_params.write_to(mapping.first, current_fp_metadata.referenced_textures_mask);
 
-		m_texture_parameters_buffer->bind_range(GL_FRAGMENT_TEXTURE_PARAMS_BIND_SLOT, mapping.second, 512);
+		m_texture_parameters_buffer->bind_range(GL_FRAGMENT_TEXTURE_PARAMS_BIND_SLOT, mapping.second, 768);
 	}
 
 	if (update_raster_env)
@@ -1092,7 +1089,7 @@ gl::work_item& GLGSRender::post_flush_request(u32 address, gl::texture_cache::th
 	return result;
 }
 
-bool GLGSRender::scaled_image_from_memory(rsx::blit_src_info& src, rsx::blit_dst_info& dst, bool interpolate)
+bool GLGSRender::scaled_image_from_memory(const rsx::blit_src_info& src, const rsx::blit_dst_info& dst, bool interpolate)
 {
 	gl::command_context cmd{ gl_state };
 	if (m_gl_texture_cache.blit(cmd, src, dst, interpolate, m_rtts))

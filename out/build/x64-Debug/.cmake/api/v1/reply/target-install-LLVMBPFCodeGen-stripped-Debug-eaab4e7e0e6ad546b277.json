@@ -1,0 +1,109 @@
+{
+	"backtrace" : 5,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_custom_target",
+			"add_llvm_install_targets",
+			"add_llvm_library",
+			"add_llvm_component_library",
+			"add_llvm_target",
+			"add_dependencies"
+		],
+		"files" : 
+		[
+			"llvm/cmake/modules/AddLLVM.cmake",
+			"llvm/lib/Target/BPF/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 4,
+				"file" : 1,
+				"line" : 17,
+				"parent" : 0
+			},
+			{
+				"command" : 3,
+				"file" : 0,
+				"line" : 1327,
+				"parent" : 1
+			},
+			{
+				"command" : 2,
+				"file" : 0,
+				"line" : 771,
+				"parent" : 2
+			},
+			{
+				"command" : 1,
+				"file" : 0,
+				"line" : 830,
+				"parent" : 3
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 721,
+				"parent" : 4
+			},
+			{
+				"command" : 5,
+				"file" : 0,
+				"line" : 731,
+				"parent" : 4
+			}
+		]
+	},
+	"dependencies" : 
+	[
+		{
+			"backtrace" : 6,
+			"id" : "LLVMBPFCodeGen::@41cde4890f71c81b0fdb"
+		}
+	],
+	"id" : "install-LLVMBPFCodeGen-stripped::@41cde4890f71c81b0fdb",
+	"name" : "install-LLVMBPFCodeGen-stripped",
+	"paths" : 
+	{
+		"build" : "3rdparty/llvm_build/lib/Target/BPF",
+		"source" : "llvm/lib/Target/BPF"
+	},
+	"sourceGroups" : 
+	[
+		{
+			"name" : "",
+			"sourceIndexes" : 
+			[
+				0
+			]
+		},
+		{
+			"name" : "CMake Rules",
+			"sourceIndexes" : 
+			[
+				1
+			]
+		}
+	],
+	"sources" : 
+	[
+		{
+			"backtrace" : 5,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/BPF/CMakeFiles/install-LLVMBPFCodeGen-stripped",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "out/build/x64-Debug/3rdparty/llvm_build/lib/Target/BPF/CMakeFiles/install-LLVMBPFCodeGen-stripped.rule",
+			"sourceGroupIndex" : 1
+		}
+	],
+	"type" : "UTILITY"
+}

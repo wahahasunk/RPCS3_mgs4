@@ -106,12 +106,7 @@ std::pair<PPUDisAsm::const_op, u64> PPUDisAsm::try_get_const_op_gpr_value(u32 re
 
 		const auto type = s_ppu_itype.decode(opcode);
 
-		auto is_branch = [](enum ppu_itype::type itype)
-		{
-			return itype == ppu_itype::BC || itype == ppu_itype::B || itype == ppu_itype::BCLR || itype == ppu_itype::BCCTR;
-		};
-
-		if (is_branch(type) || type == ppu_itype::UNK)
+		if (type & ppu_itype::branch || type == ppu_itype::UNK)
 		{
 			// TODO: Detect calls, ignore them if reg is a non-volatile register
 			return {};
@@ -1347,7 +1342,7 @@ void PPUDisAsm::BC(ppu_opcode_t op)
 
 	if (!inst)
 	{
-		fmt::append(last_opcode, "bc 0x%x, 0x%x, 0x%x, %d, %d", bo, bi, bd, aa, lk);
+		fmt::append(last_opcode, "%-*s 0x%x, 0x%x, 0x%x, %d, %d", PadOp(), "bc", bo, bi, bd, aa, lk);
 		return;
 	}
 

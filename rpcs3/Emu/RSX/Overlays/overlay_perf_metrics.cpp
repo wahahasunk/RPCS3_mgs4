@@ -537,19 +537,19 @@ namespace rsx
 				}
 				case detail_level::minimal:
 				{
-					perf_text += fmt::format("FPS : %05.2f", m_fps);
+					fmt::append(perf_text, "FPS : %05.2f", m_fps);
 					break;
 				}
 				case detail_level::low:
 				{
-					perf_text += fmt::format("FPS : %05.2f\n"
+					fmt::append(perf_text, "FPS : %05.2f\n"
 					                         "CPU : %04.1f %%",
 					    m_fps, m_cpu_usage);
 					break;
 				}
 				case detail_level::medium:
 				{
-					perf_text += fmt::format("FPS : %05.2f\n\n"
+					fmt::append(perf_text, "FPS : %05.2f\n\n"
 					                         "%s\n"
 					                         " PPU   : %04.1f %%\n"
 					                         " SPU   : %04.1f %%\n"
@@ -560,7 +560,7 @@ namespace rsx
 				}
 				case detail_level::high:
 				{
-					perf_text += fmt::format("FPS : %05.2f (%03.1fms)\n\n"
+					fmt::append(perf_text, "FPS : %05.2f (%03.1fms)\n\n"
 					                         "%s\n"
 					                         " PPU   : %04.1f %% (%2u)\n"
 					                         " SPU   : %04.1f %% (%2u)\n"
@@ -639,6 +639,7 @@ namespace rsx
 		graph::graph()
 		{
 			m_label.set_font("e046323ms.ttf", 8);
+			m_label.alignment = text_align::center;
 			m_label.fore_color = { 1.f, 1.f, 1.f, 1.f };
 			m_label.back_color = { 0.f, 0.f, 0.f, .7f };
 
@@ -653,11 +654,8 @@ namespace rsx
 
 		void graph::set_size(u16 _w, u16 _h)
 		{
+			m_label.set_size(_w, m_label.h);
 			overlay_element::set_size(_w, _h);
-
-			// Place label horizontally in the middle of the graph rect
-			const u16 label_x = std::max(x, u16(x + (w / 2) - (m_label.w / 2)));
-			m_label.set_pos(label_x, m_label.y);
 		}
 
 		void graph::set_title(const char* title)
@@ -880,21 +878,19 @@ namespace rsx
 			if (!g_cfg.misc.use_native_interface)
 				return;
 
-			if (auto& manager = g_fxo->get<rsx::overlays::display_manager>(); g_fxo->is_init<rsx::overlays::display_manager>())
+			if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
 			{
 				auto& perf_settings = g_cfg.video.perf_overlay;
-				auto perf_overlay = manager.get<rsx::overlays::perf_metrics_overlay>();
+				auto perf_overlay = manager->get<rsx::overlays::perf_metrics_overlay>();
 
 				if (perf_settings.perf_overlay_enabled)
 				{
-					const bool existed = !!perf_overlay;
-
-					if (!existed)
+					if (!perf_overlay)
 					{
-						perf_overlay = manager.create<rsx::overlays::perf_metrics_overlay>();
+						perf_overlay = manager->create<rsx::overlays::perf_metrics_overlay>();
 					}
 
-					std::lock_guard lock(manager);
+					std::lock_guard lock(*manager);
 
 					perf_overlay->set_detail_level(perf_settings.level);
 					perf_overlay->set_position(perf_settings.position);
@@ -914,7 +910,7 @@ namespace rsx
 				}
 				else if (perf_overlay)
 				{
-					manager.remove<rsx::overlays::perf_metrics_overlay>();
+					manager->remove<rsx::overlays::perf_metrics_overlay>();
 				}
 			}
 		}

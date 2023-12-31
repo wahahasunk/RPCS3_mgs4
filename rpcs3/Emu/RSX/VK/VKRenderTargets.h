@@ -405,8 +405,8 @@ namespace vk
 		{
 			return (surface->format() == ref->format() &&
 				surface->get_spp() == sample_count &&
-				surface->get_surface_width() >= width &&
-				surface->get_surface_height() >= height);
+				surface->get_surface_width() == width &&
+				surface->get_surface_height() == height);
 		}
 
 		static void prepare_surface_for_drawing(vk::command_buffer& cmd, vk::render_target* surface)
@@ -566,11 +566,14 @@ namespace vk
 				}
 			};
 
-			vk::copy_image_to_buffer(cmd, source, dest, region);
-			vk::insert_buffer_memory_barrier(cmd,
-				dest->value, src_offset_in_buffer, max_copy_length,
-				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+			// inject post-transfer barrier
+			image_readback_options_t options{};
+			options.sync_region =
+			{
+				.offset = src_offset_in_buffer,
+				.length = max_copy_length
+			};
+			vk::copy_image_to_buffer(cmd, source, dest, region, options);
 
 			if (dest != bo)
 			{
@@ -642,7 +645,7 @@ namespace vk
 		bool is_overallocated();
 		bool can_collapse_surface(const std::unique_ptr<vk::render_target>& surface, rsx::problem_severity severity) override;
 		bool handle_memory_pressure(vk::command_buffer& cmd, rsx::problem_severity severity) override;
-		void free_invalidated(vk::command_buffer& cmd, rsx::problem_severity memory_pressure);
+		void trim(vk::command_buffer& cmd, rsx::problem_severity memory_pressure);
 	};
 }
 //h

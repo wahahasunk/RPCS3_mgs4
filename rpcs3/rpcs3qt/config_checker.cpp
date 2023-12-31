@@ -64,12 +64,12 @@ bool config_checker::check_config(QString content, QString& result, bool is_log)
 		const QString start_token = "SYS: Used configuration:\n";
 		const QString end_token = "\n·";
 
-		int start = content.indexOf(start_token);
-		int end = -1;
+		qsizetype start = content.indexOf(start_token);
+		qsizetype end = -1;
 
 		if (start >= 0)
 		{
-			start += start_token.count();
+			start += start_token.size();
 			end = content.indexOf(end_token, start);
 		}
 
@@ -84,7 +84,7 @@ bool config_checker::check_config(QString content, QString& result, bool is_log)
 
 	if (!config.from_string(content.toStdString()))
 	{
-		gui_log.error("log_viewer: Failed to parse config:\n%s", content.toStdString());
+		gui_log.error("log_viewer: Failed to parse config:\n%s", content);
 		result = tr("Cannot find any config!");
 		return false;
 	}

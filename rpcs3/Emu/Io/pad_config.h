@@ -1,6 +1,6 @@
 #pragma once
 
-#include "pad_config_types.h"
+#include "pad_types.h"
 
 #include "Utilities/Config.h"
 
@@ -24,6 +24,9 @@ struct cfg_pad final : cfg::node
 {
 	cfg_pad() {};
 	cfg_pad(node* owner, const std::string& name) : cfg::node(owner, name) {}
+
+	static std::vector<std::string> get_buttons(const std::string& str);
+	static std::string get_buttons(std::vector<std::string> vec);
 
 	cfg::string ls_left{ this, "Left Stick Left", "" };
 	cfg::string ls_down{ this, "Left Stick Down", "" };
@@ -51,6 +54,13 @@ struct cfg_pad final : cfg::node
 	cfg::string l2{ this, "L2", "" };
 	cfg::string l3{ this, "L3", "" };
 
+	cfg::string ir_nose{ this, "IR Nose", "" };
+	cfg::string ir_tail{ this, "IR Tail", "" };
+	cfg::string ir_left{ this, "IR Left", "" };
+	cfg::string ir_right{ this, "IR Right", "" };
+	cfg::string tilt_left{ this, "Tilt Left", "" };
+	cfg::string tilt_right{ this, "Tilt Right", "" };
+
 	cfg_sensor motion_sensor_x{ this, "Motion Sensor X" };
 	cfg_sensor motion_sensor_y{ this, "Motion Sensor Y" };
 	cfg_sensor motion_sensor_z{ this, "Motion Sensor Z" };
@@ -58,6 +68,8 @@ struct cfg_pad final : cfg::node
 
 	cfg::string pressure_intensity_button{ this, "Pressure Intensity Button", "" };
 	cfg::uint<0, 100> pressure_intensity{ this, "Pressure Intensity Percent", 50 };
+	cfg::_bool pressure_intensity_toggle_mode{ this, "Pressure Intensity Toggle Mode", false };
+	cfg::uint<0, 255> pressure_intensity_deadzone{ this, "Pressure Intensity Deadzone", 0 };
 
 	cfg::uint<0, 200> lstickmultiplier{ this, "Left Stick Multiplier", 100 };
 	cfg::uint<0, 200> rstickmultiplier{ this, "Right Stick Multiplier", 100 };
@@ -92,7 +104,7 @@ struct cfg_pad final : cfg::node
 	cfg::uint<0, 100> analog_lerp_factor{ this, "Analog Button Lerp Factor", 100 };
 	cfg::uint<0, 100> trigger_lerp_factor{ this, "Trigger Lerp Factor", 100 };
 
-	cfg::uint<0, 5> device_class_type{ this, "Device Class Type", 0 };
+	cfg::uint<CELL_PAD_PCLASS_TYPE_STANDARD, CELL_PAD_PCLASS_TYPE_SKATEBOARD> device_class_type{ this, "Device Class Type", 0 };
 	cfg::uint<0, 65535> vendor_id{ this, "Vendor ID", 0 };
 	cfg::uint<0, 65535> product_id{ this, "Product ID", 0 };
 };
@@ -126,18 +138,18 @@ struct cfg_input final : cfg::node
 	void save(const std::string& title_id, const std::string& profile = "") const;
 };
 
-struct cfg_profile final : cfg::node
+struct cfg_input_configurations final : cfg::node
 {
-	cfg_profile();
+	cfg_input_configurations();
 	bool load();
 	void save() const;
 
 	const std::string path;
 	const std::string global_key = "global";
-	const std::string default_profile = "Default";
+	const std::string default_config = "Default";
 
-	cfg::map_entry active_profiles{ this, "Active Profiles" };
+	cfg::map_entry active_configs{ this, "Active Configurations" };
 };
 
 extern cfg_input g_cfg_input;
-extern cfg_profile g_cfg_profile;
+extern cfg_input_configurations g_cfg_input_configs;

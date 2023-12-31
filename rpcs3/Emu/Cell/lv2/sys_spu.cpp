@@ -2,6 +2,7 @@
 #include "sys_spu.h"
 
 #include "Emu/System.h"
+#include "Emu/system_config.h"
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
 #include "Crypto/unself.h"
@@ -183,39 +184,51 @@ void sys_spu_image::deploy(u8* loc, std::span<const sys_spu_segment> segs, bool 
 		hash[5 + i * 2] = pal[sha1_hash[i] & 15];
 	}
 
+	auto mem_translate = [loc](u32 addr, u32 size)
+	{
+		return utils::add_saturate<u32>(addr, size) <= SPU_LS_SIZE ? loc + addr : nullptr;
+	};
+
 	// Apply the patch
-	auto applied = g_fxo->get<patch_engine>().apply(hash, loc);
+	auto applied = g_fxo->get<patch_engine>().apply(hash, mem_translate);
 
 	if (!Emu.GetTitleID().empty())
 	{
 		// Alternative patch
-		applied += g_fxo->get<patch_engine>().apply(Emu.GetTitleID() + '-' + hash, loc);
+		applied += g_fxo->get<patch_engine>().apply(Emu.GetTitleID() + '-' + hash, mem_translate);
 	}
 
 	(is_verbose ? spu_log.notice : sys_spu.trace)("Loaded SPU image: %s (<- %u)%s", hash, applied.size(), dump);
 }
 
 lv2_spu_group::lv2_spu_group(utils::serial& ar) noexcept
-	: name(ar.operator std::string())
+	: name(ar.pop<std::string>())
 	, id(idm::last_id())
 	, max_num(ar)
 	, mem_size(ar)
 	, type(ar) // SPU Thread Group Type
 	, ct(lv2_memory_container::search(ar))
-	, has_scheduler_context(ar.operator u8())
+	, has_scheduler_context(ar.pop<u8>())
 	, max_run(ar)
 	, init(ar)
-	, prio(ar)
-	, run_state(ar.operator spu_group_status())
+	, prio([&ar]()
+	{
+		std::common_type_t<decltype(lv2_spu_group::prio)> prio{};
+
+		ar(prio.all);
+
+		return prio;
+	}())
+	, run_state(ar.pop<spu_group_status>())
 	, exit_status(ar)
 {
 	for (auto& thread : threads)
 	{
-		if (ar.operator u8())
+		if (ar.pop<bool>())
 		{
 			ar(id_manager::g_id);
-			thread = std::make_shared<named_thread<spu_thread>>(ar, this);
-			idm::import_existing<named_thread<spu_thread>>(thread, idm::last_id());
+			thread = std::make_shared<named_thread<spu_thread>>(stx::launch_retainer{}, ar, this);
+			ensure(idm::import_existing<named_thread<spu_thread>>(thread, idm::last_id()));
 			running += !thread->stop_flag_removal_protection;
 		}
 	}
@@ -226,7 +239,7 @@ lv2_spu_group::lv2_spu_group(utils::serial& ar) noexcept
 
 	for (auto ep : {&ep_run, &ep_exception, &ep_sysmodule})
 	{
-		*ep = idm::get_unlocked<lv2_obj, lv2_event_queue>(ar.operator u32());
+		*ep = idm::get_unlocked<lv2_obj, lv2_event_queue>(ar.pop<u32>());
 	}
 
 	waiter_spu_index = -1;
@@ -285,7 +298,7 @@ void lv2_spu_group::save(utils::serial& ar)
 {
 	USING_SERIALIZATION_VERSION(spu);
 
-	ar(name, max_num, mem_size, type, ct->id, has_scheduler_context, max_run, init, prio, run_state, exit_status);
+	ar(name, max_num, mem_size, type, ct->id, has_scheduler_context, max_run, init, prio.load().all, run_state, exit_status);
 
 	for (const auto& thread : threads)
 	{
@@ -315,7 +328,7 @@ void lv2_spu_group::save(utils::serial& ar)
 
 lv2_spu_image::lv2_spu_image(utils::serial& ar)
 	: e_entry(ar)
-	, segs(ar.operator decltype(segs)())
+	, segs(ar.pop<decltype(segs)>())
 	, nsegs(ar)
 {
 }
@@ -367,10 +380,7 @@ struct spu_limits_t
 
 	spu_limits_t(utils::serial& ar) noexcept
 	{
-		if (GET_SERIALIZATION_VERSION(spu) >= 2)
-		{
-			ar(max_raw, max_spu);
-		}
+		ar(max_raw, max_spu);
 	}
 
 	void save(utils::serial& ar)
@@ -1032,7 +1042,7 @@ error_code sys_spu_thread_group_start(ppu_thread& ppu, u32 id)
 		{
 			for (; index != umax; index--)
 			{
-				threads[index]->state.notify_one(cpu_flag::stop);
+				threads[index]->state.notify_one();
 			}
 		}
 	} notify_threads;
@@ -1206,7 +1216,7 @@ error_code sys_spu_thread_group_resume(ppu_thread& ppu, u32 id)
 		{
 			for (; index != umax; index--)
 			{
-				threads[index]->state.notify_one(cpu_flag::suspend);
+				threads[index]->state.notify_one();
 			}
 		}
 	} notify_threads;
@@ -1484,7 +1494,7 @@ error_code sys_spu_thread_group_join(ppu_thread& ppu, u32 id, vm::ptr<u32> cause
 			{
 				std::lock_guard lock(group->mutex);
 
-				if (!group->waiter)
+				if (group->waiter != &ppu)
 				{
 					break;
 				}
@@ -1540,7 +1550,10 @@ error_code sys_spu_thread_group_set_priority(ppu_thread& ppu, u32 id, s32 priori
 		return CELL_EINVAL;
 	}
 
-	group->prio = priority;
+	group->prio.atomic_op([&](std::common_type_t<decltype(lv2_spu_group::prio)>& prio)
+	{
+		prio.prio = priority;
+	});
 
 	return CELL_OK;
 }
@@ -1566,7 +1579,7 @@ error_code sys_spu_thread_group_get_priority(ppu_thread& ppu, u32 id, vm::ptr<s3
 	}
 	else
 	{
-		*priority = group->prio;
+		*priority = group->prio.load().prio;
 	}
 
 	return CELL_OK;

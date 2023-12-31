@@ -100,6 +100,12 @@ struct gui_listener : logs::listener
 		pending = queue.pop_all();
 		return pending.get();
 	}
+
+	void clear()
+	{
+		pending = lf_queue_slice<packet_t>();
+		queue.pop_all();
+	}
 };
 
 // GUI Listener instance
@@ -232,6 +238,7 @@ void log_frame::CreateAndConnectActions()
 	{
 		m_old_log_text.clear();
 		m_log->clear();
+		s_gui_listener.clear();
 	});
 
 	m_clear_tty_act = new QAction(tr("Clear"), this);
@@ -239,6 +246,20 @@ void log_frame::CreateAndConnectActions()
 	{
 		m_old_tty_text.clear();
 		m_tty->clear();
+	});
+
+	m_perform_goto_on_debugger = new QAction(tr("Go-To On The Debugger"), this);
+	connect(m_perform_goto_on_debugger, &QAction::triggered, [this]()
+	{
+		QPlainTextEdit* pte = (m_tabWidget->currentIndex() == 1 ? m_tty : m_log);
+		Q_EMIT PerformGoToOnDebugger(pte->textCursor().selectedText(), true);
+	});
+
+	m_perform_goto_thread_on_debugger = new QAction(tr("Show Thread On The Debugger"), this);
+	connect(m_perform_goto_thread_on_debugger, &QAction::triggered, [this]()
+	{
+		QPlainTextEdit* pte = (m_tabWidget->currentIndex() == 1 ? m_tty : m_log);
+		Q_EMIT PerformGoToOnDebugger(pte->textCursor().selectedText(), false);
 	});
 
 	m_stack_act_tty = new QAction(tr("Stack Mode (TTY)"), this);
@@ -336,6 +357,16 @@ void log_frame::CreateAndConnectActions()
 	{
 		QMenu* menu = m_log->createStandardContextMenu();
 		menu->addAction(m_clear_act);
+		menu->addAction(m_perform_goto_on_debugger);
+		menu->addAction(m_perform_goto_thread_on_debugger);
+
+		std::shared_ptr<bool> goto_signal_accepted = std::make_shared<bool>(false);
+		Q_EMIT PerformGoToOnDebugger("", true, true, goto_signal_accepted);
+		m_perform_goto_on_debugger->setEnabled(m_log->textCursor().hasSelection() && *goto_signal_accepted);
+		m_perform_goto_thread_on_debugger->setEnabled(m_log->textCursor().hasSelection() && *goto_signal_accepted);
+		m_perform_goto_on_debugger->setToolTip(tr("Jump to the selected hexadecimal address from the log text on the debugger."));
+		m_perform_goto_thread_on_debugger->setToolTip(tr("Show the thread that corresponds to the thread ID from lthe log text on the debugger."));
+
 		menu->addSeparator();
 		menu->addActions(m_log_level_acts->actions());
 		menu->addSeparator();
@@ -349,6 +380,13 @@ void log_frame::CreateAndConnectActions()
 	{
 		QMenu* menu = m_tty->createStandardContextMenu();
 		menu->addAction(m_clear_tty_act);
+		menu->addAction(m_perform_goto_on_debugger);
+
+		std::shared_ptr<bool> goto_signal_accepted = std::make_shared<bool>(false);
+		Q_EMIT PerformGoToOnDebugger("", false, true, goto_signal_accepted);
+		m_perform_goto_on_debugger->setEnabled(m_tty->textCursor().hasSelection() && *goto_signal_accepted);
+		m_perform_goto_on_debugger->setToolTip(tr("Jump to the selected hexadecimal address from the TTY text on the debugger."));
+
 		menu->addSeparator();
 		menu->addAction(m_tty_act);
 		menu->addAction(m_stack_act_tty);
@@ -412,6 +450,7 @@ void log_frame::LoadSettings()
 	m_stack_log = m_gui_settings->GetValue(gui::l_stack).toBool();
 	m_stack_tty = m_gui_settings->GetValue(gui::l_stack_tty).toBool();
 	m_ansi_tty = m_gui_settings->GetValue(gui::l_ansi_code).toBool();
+	g_log_all_errors = !m_gui_settings->GetValue(gui::l_stack_err).toBool();
 	m_stack_act_log->setChecked(m_stack_log);
 	m_stack_act_tty->setChecked(m_stack_tty);
 	m_ansi_act_tty->setChecked(m_ansi_tty);
@@ -445,18 +484,20 @@ void log_frame::RepaintTextColors()
 	QList<QColor> old_colors = m_color;
 	QColor old_stack_color = m_color_stack;
 
+	const QColor color = gui::utils::get_foreground_color();
+
 	// Get text color. Do this once to prevent possible slowdown
 	m_color.clear();
-	m_color.append(gui::utils::get_label_color("log_level_always"));
-	m_color.append(gui::utils::get_label_color("log_level_fatal"));
-	m_color.append(gui::utils::get_label_color("log_level_error"));
-	m_color.append(gui::utils::get_label_color("log_level_todo"));
-	m_color.append(gui::utils::get_label_color("log_level_success"));
-	m_color.append(gui::utils::get_label_color("log_level_warning"));
-	m_color.append(gui::utils::get_label_color("log_level_notice"));
-	m_color.append(gui::utils::get_label_color("log_level_trace"));
+	m_color.append(gui::utils::get_label_color("log_level_always", Qt::darkCyan, Qt::cyan));
+	m_color.append(gui::utils::get_label_color("log_level_fatal", Qt::darkMagenta, Qt::magenta));
+	m_color.append(gui::utils::get_label_color("log_level_error", Qt::red, Qt::red));
+	m_color.append(gui::utils::get_label_color("log_level_todo", Qt::darkYellow, Qt::darkYellow));
+	m_color.append(gui::utils::get_label_color("log_level_success", Qt::darkGreen, Qt::green));
+	m_color.append(gui::utils::get_label_color("log_level_warning", Qt::darkYellow, Qt::darkYellow));
+	m_color.append(gui::utils::get_label_color("log_level_notice", color, color));
+	m_color.append(gui::utils::get_label_color("log_level_trace", color, color));
 
-	m_color_stack = gui::utils::get_label_color("log_stack");
+	m_color_stack = gui::utils::get_label_color("log_stack", color, color);
 
 	// Use new colors if the old colors weren't set yet
 	if (old_colors.empty())
@@ -472,7 +513,7 @@ void log_frame::RepaintTextColors()
 	// Repaint TTY with new colors
 	QTextCursor tty_cursor = m_tty->textCursor();
 	QTextCharFormat text_format = tty_cursor.charFormat();
-	text_format.setForeground(gui::utils::get_label_color("tty_text"));
+	text_format.setForeground(gui::utils::get_label_color("tty_text", color, color));
 	tty_cursor.setCharFormat(text_format);
 	m_tty->setTextCursor(tty_cursor);
 
@@ -650,7 +691,7 @@ void log_frame::UpdateUI()
 
 	const auto font_start_tag = [](const QColor& color) -> const QString { return QStringLiteral("<font color = \"") % color.name() % QStringLiteral("\">"); };
 	const QString font_start_tag_stack = "<font color = \"" % m_color_stack.name() % "\">";
-	const QString font_end_tag = QStringLiteral("</font>");
+	static const QString font_end_tag = QStringLiteral("</font>");
 
 	static constexpr auto escaped = [](const QString& text)
 	{
@@ -868,7 +909,7 @@ bool log_frame::eventFilter(QObject* object, QEvent* event)
 			if (m_find_dialog && m_find_dialog->isVisible())
 				m_find_dialog->close();
 
-			m_find_dialog.reset(new find_dialog(static_cast<QTextEdit*>(object), this));
+			m_find_dialog.reset(new find_dialog(static_cast<QPlainTextEdit*>(object), this));
 		}
 	}
 

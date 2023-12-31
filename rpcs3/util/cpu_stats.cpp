@@ -2,13 +2,17 @@
 #include "util/cpu_stats.hpp"
 #include "util/sysinfo.hpp"
 #include "util/logs.hpp"
+#include "util/asm.hpp"
 #include "Utilities/StrUtil.h"
+
 #include <algorithm>
 
 #ifdef _WIN32
 #include "windows.h"
 #include "tlhelp32.h"
+#ifdef _MSC_VER
 #pragma comment(lib, "pdh.lib")
+#endif
 #else
 #include "fstream"
 #include "sstream"
@@ -80,16 +84,30 @@ namespace utils
 #endif
 	}
 
+	cpu_stats::~cpu_stats()
+	{
+#ifdef _WIN32
+		if (m_cpu_query)
+		{
+			PDH_STATUS status = PdhCloseQuery(m_cpu_query);
+			if (ERROR_SUCCESS != status)
+			{
+				perf_log.error("Failed to close cpu query of per core cpu usage: %s", pdh_error(status));
+			}
+		}
+#endif
+	}
+
 	void cpu_stats::init_cpu_query()
 	{
 #ifdef _WIN32
-		PDH_STATUS status = PdhOpenQuery(NULL, NULL, &m_cpu_query);
+		PDH_STATUS status = PdhOpenQuery(NULL, 0, &m_cpu_query);
 		if (ERROR_SUCCESS != status)
 		{
 			perf_log.error("Failed to open cpu query for per core cpu usage: %s", pdh_error(status));
 			return;
 		}
-		status = PdhAddEnglishCounter(m_cpu_query, L"\\Processor(*)\\% Processor Time", NULL, &m_cpu_cores);
+		status = PdhAddEnglishCounter(m_cpu_query, L"\\Processor(*)\\% Processor Time", 0, &m_cpu_cores);
 		if (ERROR_SUCCESS != status)
 		{
 			perf_log.error("Failed to add processor time counter for per core cpu usage: %s", pdh_error(status));
@@ -111,6 +129,7 @@ namespace utils
 		per_core_usage.resize(utils::get_thread_count());
 		std::fill(per_core_usage.begin(), per_core_usage.end(), 0.0);
 
+#if defined(_WIN32) || defined(__linux__)
 		const auto string_to_number = [](const std::string& str) -> std::pair<bool, size_t>
 		{
 			std::add_pointer_t<char> eval;
@@ -138,37 +157,35 @@ namespace utils
 			return;
 		}
 
-		PDH_FMT_COUNTERVALUE counterVal{};
-		DWORD dwBufferSize = 0; // Size of the pItems buffer
-		DWORD dwItemCount = 0;  // Number of items in the pItems buffer
-		PDH_FMT_COUNTERVALUE_ITEM *pItems = NULL; // Array of PDH_FMT_COUNTERVALUE_ITEM structures
+		DWORD dwBufferSize = 0; // Size of the items buffer
+		DWORD dwItemCount = 0;  // Number of items in the items buffer
 
-		status = PdhGetFormattedCounterArray(m_cpu_cores, PDH_FMT_DOUBLE, &dwBufferSize, &dwItemCount, pItems);
-		if (PDH_MORE_DATA == status)
+		status = PdhGetFormattedCounterArray(m_cpu_cores, PDH_FMT_DOUBLE, &dwBufferSize, &dwItemCount, nullptr);
+		if (static_cast<PDH_STATUS>(PDH_MORE_DATA) == status)
 		{
-			pItems = (PDH_FMT_COUNTERVALUE_ITEM*)malloc(dwBufferSize);
-			if (pItems)
+			std::vector<PDH_FMT_COUNTERVALUE_ITEM> items(utils::aligned_div(dwBufferSize, sizeof(PDH_FMT_COUNTERVALUE_ITEM)));
+			if (items.size() >= dwItemCount)
 			{
-				status = PdhGetFormattedCounterArray(m_cpu_cores, PDH_FMT_DOUBLE, &dwBufferSize, &dwItemCount, pItems);
+				status = PdhGetFormattedCounterArray(m_cpu_cores, PDH_FMT_DOUBLE, &dwBufferSize, &dwItemCount, items.data());
 				if (ERROR_SUCCESS == status)
 				{
-					ensure(dwItemCount > 0);
-					ensure((dwItemCount - 1) == per_core_usage.size()); // Remove one for _Total
+					ensure(dwItemCount == per_core_usage.size() + 1); // Plus one for _Total
 
 					// Loop through the array and get the instance name and percentage.
-					for (DWORD i = 0; i < dwItemCount; i++)
+					for (usz i = 0; i < dwItemCount; i++)
 					{
-						const std::string token = wchar_to_utf8(pItems[i].szName);
+						const PDH_FMT_COUNTERVALUE_ITEM& item = items[i];
+						const std::string token = wchar_to_utf8(item.szName);
 
 						if (const std::string lower = fmt::to_lower(token); lower.find("total") != umax)
 						{
-							total_usage = pItems[i].FmtValue.doubleValue;
+							total_usage = item.FmtValue.doubleValue;
 							continue;
 						}
 
 						if (const auto [success, cpu_index] = string_to_number(token); success && cpu_index < dwItemCount)
 						{
-							per_core_usage[cpu_index] = pItems[i].FmtValue.doubleValue;
+							per_core_usage[cpu_index] = item.FmtValue.doubleValue;
 						}
 						else if (!success)
 						{
@@ -180,6 +197,10 @@ namespace utils
 						}
 					}
 				}
+				else if (static_cast<PDH_STATUS>(PDH_CALC_NEGATIVE_DENOMINATOR) == status) // Apparently this is a common uncritical error
+				{
+					perf_log.notice("Failed to get per core cpu usage: %s", pdh_error(status));
+				}
 				else
 				{
 					perf_log.error("Failed to get per core cpu usage: %s", pdh_error(status));
@@ -187,10 +208,9 @@ namespace utils
 			}
 			else
 			{
-				perf_log.error("Failed to allocate buffer for per core cpu usage.");
+				perf_log.error("Failed to allocate buffer for per core cpu usage. (size=%d, dwItemCount=%d)", items.size(), dwItemCount);
 			}
 		}
-		if (pItems) free(pItems);
 
 #elif __linux__
 
@@ -284,6 +304,7 @@ namespace utils
 		{
 			perf_log.error("Failed to open /proc/stat (%s)", strerror(errno));
 		}
+#endif
 #else
 		total_usage = get_usage();
 #endif
@@ -310,7 +331,7 @@ namespace utils
 		}
 		else
 		{
-			percent = (sys.QuadPart - m_sys_cpu) + (usr.QuadPart - m_usr_cpu);
+			percent = static_cast<double>((sys.QuadPart - m_sys_cpu) + (usr.QuadPart - m_usr_cpu));
 			percent /= (now.QuadPart - m_last_cpu);
 			percent /= utils::get_thread_count(); // Let's assume this is at least 1
 			percent *= 100;
@@ -360,8 +381,7 @@ namespace utils
 		entry.dwSize         = sizeof(entry);
 
 		// get the first process info.
-		BOOL ret = true;
-		ret      = Process32First(snapshot, &entry);
+		BOOL ret = Process32First(snapshot, &entry);
 		while (ret && entry.th32ProcessID != id)
 		{
 			ret = Process32Next(snapshot, &entry);

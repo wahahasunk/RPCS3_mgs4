@@ -75,7 +75,7 @@ void lv2_int_serv::exec() const
 	({
 		{ ppu_cmd::reset_stack, 0 },
 		{ ppu_cmd::set_args, 2 }, arg1, arg2,
-		{ ppu_cmd::opd_call, 0 }, thread->entry_func,
+		{ ppu_cmd::entry_call, 0 },
 		{ ppu_cmd::sleep, 0 },
 		{ ppu_cmd::ptr_call, 0 },
 		std::bit_cast<u64>(&ppu_interrupt_thread_entry)
@@ -183,7 +183,7 @@ error_code _sys_interrupt_thread_establish(ppu_thread& ppu, vm::ptr<u32> ih, u32
 		});
 
 		it->state -= cpu_flag::stop;
-		it->state.notify_one(cpu_flag::stop);
+		it->state.notify_one();
 
 		return result;
 	});
@@ -214,6 +214,9 @@ error_code _sys_interrupt_thread_disestablish(ppu_thread& ppu, u32 ih, vm::ptr<u
 		if (const auto thread = idm::withdraw<named_thread<ppu_thread>>(ih))
 		{
 			*r13 = thread->gpr[13];
+
+			// It is detached from IDM now so join must be done explicitly now
+			*thread = thread_state::finished;
 			return CELL_OK;
 		}
 

@@ -9,8 +9,9 @@
 #include "util/asm.hpp"
 #include "util/v128.hpp"
 #include "util/simd.hpp"
+#include "Crypto/unzip.h"
+
 #include <charconv>
-#include <zlib.h>
 
 #ifdef __linux__
 #define CAN_OVERCOMMIT
@@ -136,7 +137,7 @@ static atomic_t<u64> s_code_pos{0}, s_data_pos{0};
 static std::vector<u8> s_code_init, s_data_init;
 
 template <atomic_t<u64>& Ctr, uint Off, utils::protection Prot>
-static u8* add_jit_memory(usz size, uint align)
+static u8* add_jit_memory(usz size, usz align)
 {
 	// Select subrange
 	u8* pointer = get_jit_memory() + Off;
@@ -198,6 +199,9 @@ static u8* add_jit_memory(usz size, uint align)
 		});
 	}
 
+	ensure(pointer + pos >= get_jit_memory() + Off);
+	ensure(pointer + pos < get_jit_memory() + Off + 0x40000000);
+
 	return pointer + pos;
 }
 
@@ -248,7 +252,7 @@ uchar* jit_runtime::_alloc(usz size, usz align) noexcept
 	return jit_runtime::alloc(size, align, true);
 }
 
-u8* jit_runtime::alloc(usz size, uint align, bool exec) noexcept
+u8* jit_runtime::alloc(usz size, usz align, bool exec) noexcept
 {
 	if (exec)
 	{
@@ -795,7 +799,7 @@ void asmjit::simd_builder::vec_cmp_eq(u32 esize, const Operand& dst, const Opera
 		}
 		else
 		{
-			_vec_binary_op(kIdPcmpeqw, kIdVpcmpeqw, kIdNone, dst, lhs, rhs);
+			_vec_binary_op(kIdPcmpeqd, kIdVpcmpeqd, kIdNone, dst, lhs, rhs);
 		}
 	}
 	else
@@ -863,7 +867,7 @@ void asmjit::simd_builder::vec_extract_gpr(u32 esize, const x86::Gp& dst, const 
 #endif
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/FormattedStream.h"
-#include "llvm/Support/Host.h"
+#include "llvm/TargetParser/Host.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
 #include "llvm/ExecutionEngine/ObjectCache.h"
@@ -1167,42 +1171,20 @@ public:
 		//fs::file(name, fs::rewrite).write(obj.getBufferStart(), obj.getBufferSize());
 		name.append(".gz");
 
-		z_stream zs{};
-		uLong zsz = compressBound(::narrow<u32>(obj.getBufferSize())) + 256;
-		auto zbuf = std::make_unique<uchar[]>(zsz);
-#ifndef _MSC_VER
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#endif
-		deflateInit2(&zs, 9, Z_DEFLATED, 16 + 15, 9, Z_DEFAULT_STRATEGY);
-#ifndef _MSC_VER
-#pragma GCC diagnostic pop
-#endif
-		zs.avail_in  = static_cast<uInt>(obj.getBufferSize());
-		zs.next_in   = reinterpret_cast<uchar*>(const_cast<char*>(obj.getBufferStart()));
-		zs.avail_out = static_cast<uInt>(zsz);
-		zs.next_out  = zbuf.get();
+		fs::file module_file(name, fs::rewrite);
 
-		switch (deflate(&zs, Z_FINISH))
+		if (!module_file)
 		{
-		case Z_OK:
-		case Z_STREAM_END:
-		{
-			deflateEnd(&zs);
-			break;
-		}
-		default:
-		{
-			jit_log.error("LLVM: Failed to compress module: %s", _module->getName().data());
-			deflateEnd(&zs);
+			jit_log.error("LLVM: Failed to create module file: %s (%s)", name, fs::g_tls_error);
 			return;
 		}
-		}
 
-		if (!fs::write_file(name, fs::rewrite, zbuf.get(), zsz - zs.avail_out))
+		if (!zip(obj.getBufferStart(), obj.getBufferSize(), module_file))
 		{
-				jit_log.error("LLVM: Failed to create module file: %s (%s)", name, fs::g_tls_error);
-				return;
+			jit_log.error("LLVM: Failed to compress module: %s", _module->getName().data());
+			module_file.close();
+			fs::remove_file(name);
+			return;
 		}
 
 		jit_log.notice("LLVM: Created module: %s", _module->getName().data());
@@ -1212,56 +1194,20 @@ public:
 	{
 		if (fs::file cached{path + ".gz", fs::read})
 		{
-			std::vector<uchar> gz = cached.to_vector<uchar>();
-			std::vector<uchar> out;
-			z_stream zs{};
+			const std::vector<u8> cached_data = cached.to_vector<u8>();
 
-			if (gz.empty()) [[unlikely]]
+			if (cached_data.empty()) [[unlikely]]
 			{
 				return nullptr;
 			}
-#ifndef _MSC_VER
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#endif
-			inflateInit2(&zs, 16 + 15);
-#ifndef _MSC_VER
-#pragma GCC diagnostic pop
-#endif
-			zs.avail_in = static_cast<uInt>(gz.size());
-			zs.next_in  = gz.data();
-			out.resize(gz.size() * 6);
-			zs.avail_out = static_cast<uInt>(out.size());
-			zs.next_out  = out.data();
 
-			while (zs.avail_in)
+			const std::vector<u8> out = unzip(cached_data);
+
+			if (out.empty())
 			{
-				switch (inflate(&zs, Z_FINISH))
-				{
-				case Z_OK: break;
-				case Z_STREAM_END: break;
-				case Z_BUF_ERROR:
-				{
-					if (zs.avail_in)
-						break;
-					[[fallthrough]];
-				}
-				default:
-					inflateEnd(&zs);
-					return nullptr;
-				}
-
-				if (zs.avail_in)
-				{
-					auto cur_size = zs.next_out - out.data();
-					out.resize(out.size() + 65536);
-					zs.avail_out = static_cast<uInt>(out.size() - cur_size);
-					zs.next_out = out.data() + cur_size;
-				}
+				jit_log.error("LLVM: Failed to unzip module: '%s'", path);
+				return nullptr;
 			}
-
-			out.resize(zs.next_out - out.data());
-			inflateEnd(&zs);
 
 			auto buf = llvm::WritableMemoryBuffer::getNewUninitMemBuffer(out.size());
 			std::memcpy(buf->getBufferStart(), out.data(), out.size());
@@ -1319,7 +1265,10 @@ std::string jit_compiler::cpu(const std::string& _cpu)
 			m_cpu == "icelake-client" ||
 			m_cpu == "icelake-server" ||
 			m_cpu == "tigerlake" ||
-			m_cpu == "rocketlake")
+			m_cpu == "rocketlake" ||
+			m_cpu == "alderlake" ||
+			m_cpu == "raptorlake" ||
+			m_cpu == "meteorlake")
 		{
 			// Downgrade if AVX is not supported by some chips
 			if (!utils::has_avx())
@@ -1350,9 +1299,49 @@ std::string jit_compiler::cpu(const std::string& _cpu)
 			// Upgrade
 			m_cpu = "znver2";
 		}
+
+		if ((m_cpu == "znver3" || m_cpu == "goldmont" || m_cpu == "alderlake" || m_cpu == "raptorlake" || m_cpu == "meteorlake") && utils::has_avx512_icl())
+		{
+			// Upgrade
+			m_cpu = "icelake-client";
+		}
+
+		if (m_cpu == "goldmont" && utils::has_avx2())
+		{
+			// Upgrade
+			m_cpu = "alderlake";
+		}
 	}
 
 	return m_cpu;
+}
+
+std::string jit_compiler::triple1()
+{
+#if defined(_WIN32)
+	return llvm::Triple::normalize(llvm::sys::getProcessTriple());
+#elif defined(__APPLE__) && defined(ARCH_X64)
+	return llvm::Triple::normalize("x86_64-unknown-linux-gnu");
+#elif defined(__APPLE__) && defined(ARCH_ARM64)
+	return llvm::Triple::normalize("aarch64-unknown-linux-gnu");
+#else
+	return llvm::Triple::normalize(llvm::sys::getProcessTriple());
+#endif
+}
+
+std::string jit_compiler::triple2()
+{
+#if defined(_WIN32) && defined(ARCH_X64)
+	return llvm::Triple::normalize("x86_64-unknown-linux-gnu");
+#elif defined(_WIN32) && defined(ARCH_ARM64)
+	return llvm::Triple::normalize("aarch64-unknown-linux-gnu");
+#elif defined(__APPLE__) && defined(ARCH_X64)
+	return llvm::Triple::normalize("x86_64-unknown-linux-gnu");
+#elif defined(__APPLE__) && defined(ARCH_ARM64)
+	return llvm::Triple::normalize("aarch64-unknown-linux-gnu");
+#else
+	return llvm::Triple::normalize(llvm::sys::getProcessTriple());
+#endif
 }
 
 jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, const std::string& _cpu, u32 flags)
@@ -1362,15 +1351,13 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, co
 	std::string result;
 
 	auto null_mod = std::make_unique<llvm::Module> ("null_", *m_context);
-#if defined(__APPLE__) && defined(ARCH_ARM64)
-	// Force override triple on Apple arm64 or we'll get linking errors.
-	null_mod->setTargetTriple(llvm::Triple::normalize(utils::c_llvm_default_triple));
-#endif
+	null_mod->setTargetTriple(jit_compiler::triple1());
+
+	std::unique_ptr<llvm::RTDyldMemoryManager> mem;
 
 	if (_link.empty())
 	{
-		std::unique_ptr<llvm::RTDyldMemoryManager> mem;
-
+		// Auxiliary JIT (does not use custom memory manager, only writes the objects)
 		if (flags & 0x1)
 		{
 			mem = std::make_unique<MemoryManager1>();
@@ -1378,31 +1365,31 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, co
 		else
 		{
 			mem = std::make_unique<MemoryManager2>();
-			null_mod->setTargetTriple(llvm::Triple::normalize(utils::c_llvm_default_triple));
+			null_mod->setTargetTriple(jit_compiler::triple2());
 		}
+	}
+	else
+	{
+		mem = std::make_unique<MemoryManager1>();
+	}
 
-		// Auxiliary JIT (does not use custom memory manager, only writes the objects)
+	{
 		m_engine.reset(llvm::EngineBuilder(std::move(null_mod))
 			.setErrorStr(&result)
 			.setEngineKind(llvm::EngineKind::JIT)
 			.setMCJITMemoryManager(std::move(mem))
 			.setOptLevel(llvm::CodeGenOpt::Aggressive)
 			.setCodeModel(flags & 0x2 ? llvm::CodeModel::Large : llvm::CodeModel::Small)
+#ifdef __APPLE__
+			//.setCodeModel(llvm::CodeModel::Large)
+#endif
+			.setRelocationModel(llvm::Reloc::Model::PIC_)
 			.setMCPU(m_cpu)
 			.create());
 	}
-	else
-	{
-		// Primary JIT
-		m_engine.reset(llvm::EngineBuilder(std::move(null_mod))
-			.setErrorStr(&result)
-			.setEngineKind(llvm::EngineKind::JIT)
-			.setMCJITMemoryManager(std::make_unique<MemoryManager1>())
-			.setOptLevel(llvm::CodeGenOpt::Aggressive)
-			.setCodeModel(flags & 0x2 ? llvm::CodeModel::Large : llvm::CodeModel::Small)
-			.setMCPU(m_cpu)
-			.create());
 
+	if (!_link.empty())
+	{
 		for (auto&& [name, addr] : _link)
 		{
 			m_engine->updateGlobalMapping(name, addr);
@@ -1461,7 +1448,7 @@ void jit_compiler::add(const std::string& path)
 
 	if (auto object_file = llvm::object::ObjectFile::createObjectFile(*cache))
 	{
-		m_engine->addObjectFile( std::move(*object_file) );
+		m_engine->addObjectFile(llvm::object::OwningBinary<llvm::object::ObjectFile>(std::move(*object_file), std::move(cache)));
 	}
 	else
 	{

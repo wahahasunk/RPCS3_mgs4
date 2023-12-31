@@ -67,7 +67,7 @@ bool package_reader::read_header()
 	}
 
 	pkg_log.notice("Path: '%s'", m_path);
-	pkg_log.notice("Header: pkg_magic = 0x%x = \"%s\"", +m_header.pkg_magic, std::string(reinterpret_cast<const char*>(&m_header.pkg_magic), 4));
+	pkg_log.notice("Header: pkg_magic = 0x%x = \"%s\"", +m_header.pkg_magic, std::string_view(reinterpret_cast<const char*>(&m_header.pkg_magic + 1), 3)); // Skip 0x7F
 	pkg_log.notice("Header: pkg_type = 0x%x = %d", m_header.pkg_type, m_header.pkg_type);
 	pkg_log.notice("Header: pkg_platform = 0x%x = %d", m_header.pkg_platform, m_header.pkg_platform);
 	pkg_log.notice("Header: meta_offset = 0x%x = %d", m_header.meta_offset, m_header.meta_offset);
@@ -94,7 +94,7 @@ bool package_reader::read_header()
 			return false;
 		}
 
-		pkg_log.notice("Extended header: magic = 0x%x = \"%s\"", +ext_header.magic, std::string(reinterpret_cast<const char*>(&ext_header.magic), 4));
+		pkg_log.notice("Extended header: magic = 0x%x = \"%s\"", +ext_header.magic, std::string_view(reinterpret_cast<const char*>(&ext_header.magic + 1), 3));
 		pkg_log.notice("Extended header: unknown_1 = 0x%x = %d", ext_header.unknown_1, ext_header.unknown_1);
 		pkg_log.notice("Extended header: ext_hdr_size = 0x%x = %d", ext_header.ext_hdr_size, ext_header.ext_hdr_size);
 		pkg_log.notice("Extended header: ext_data_size = 0x%x = %d", ext_header.ext_data_size, ext_header.ext_data_size);
@@ -782,7 +782,7 @@ bool package_reader::fill_data(std::map<std::string, install_entry*>& all_instal
 		const bool is_psp = (entry.type & PKG_FILE_ENTRY_PSP) != 0u;
 		decrypt(entry.name_offset, entry.name_size, is_psp ? PKG_AES_KEY2 : m_dec_key.data());
 
-		const std::string name{reinterpret_cast<char*>(m_bufs.back().get()), entry.name_size};
+		const std::string_view name{reinterpret_cast<char*>(m_bufs.back().get()), entry.name_size};
 		std::string path = m_install_path + vfs::escape(name);
 
 		if (entry.pad || (entry.type & ~PKG_FILE_ENTRY_KNOWN_BITS))
@@ -833,7 +833,7 @@ bool package_reader::fill_data(std::map<std::string, install_entry*>& all_instal
 
 			m_install_entries.push_back({
 				.weak_reference = map_ptr,
-				.name = name,
+				.name = std::string(name),
 				.file_offset = entry.file_offset,
 				.file_size = entry.file_size,
 				.type = entry.type,

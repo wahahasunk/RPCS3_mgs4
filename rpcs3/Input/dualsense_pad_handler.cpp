@@ -7,7 +7,7 @@ LOG_CHANNEL(dualsense_log, "DualSense");
 template <>
 void fmt_class_string<DualSenseDevice::DualSenseDataMode>::format(std::string& out, u64 arg)
 {
-	format_enum(out, arg, [](auto mode)
+	format_enum(out, arg, [](DualSenseDevice::DualSenseDataMode mode)
 	{
 		switch (mode)
 		{
@@ -30,7 +30,8 @@ namespace
 	constexpr u32 DUALSENSE_COMMON_REPORT_SIZE = 47;
 	constexpr u32 DUALSENSE_INPUT_REPORT_GYRO_X_OFFSET = 15;
 
-	constexpr id_pair SONY_DUALSENSE_ID_0 = {0x054C, 0x0CE6};
+	constexpr id_pair SONY_DUALSENSE_ID_0 = {0x054C, 0x0CE6}; // DualSense
+	constexpr id_pair SONY_DUALSENSE_ID_1 = {0x054C, 0x0DF2}; // DualSense Edge
 
 	enum
 	{
@@ -96,7 +97,7 @@ namespace
 }
 
 dualsense_pad_handler::dualsense_pad_handler()
-    : hid_pad_handler<DualSenseDevice>(pad_handler::dualsense, {SONY_DUALSENSE_ID_0})
+    : hid_pad_handler<DualSenseDevice>(pad_handler::dualsense, {SONY_DUALSENSE_ID_0, SONY_DUALSENSE_ID_1})
 {
 	// Unique names for the config files and our pad settings dialog
 	button_list =
@@ -128,7 +129,11 @@ dualsense_pad_handler::dualsense_pad_handler()
 		{ DualSenseKeyCodes::RSXNeg,   "RS X-" },
 		{ DualSenseKeyCodes::RSXPos,   "RS X+" },
 		{ DualSenseKeyCodes::RSYPos,   "RS Y+" },
-		{ DualSenseKeyCodes::RSYNeg,   "RS Y-" }
+		{ DualSenseKeyCodes::RSYNeg,   "RS Y-" },
+		{ DualSenseKeyCodes::EdgeFnL,  "FN L" },
+		{ DualSenseKeyCodes::EdgeFnR,  "FN R" },
+		{ DualSenseKeyCodes::EdgeLB,   "LB" },
+		{ DualSenseKeyCodes::EdgeRB,   "RB" },
 	};
 
 	init_configs();
@@ -180,8 +185,6 @@ void dualsense_pad_handler::check_add_device(hid_device* hidDevice, std::string_
 		return;
 	}
 
-	std::string serial;
-
 	std::array<u8, 64> buf{};
 	buf[0] = 0x09;
 
@@ -192,8 +195,11 @@ void dualsense_pad_handler::check_add_device(hid_device* hidDevice, std::string_
 	if (res < 0 || buf[0] != 0x09)
 	{
 		dualsense_log.error("check_add_device: hid_get_feature_report 0x09 failed! result=%d, buf[0]=0x%x, error=%s", res, buf[0], hid_error(hidDevice));
+		hid_close(hidDevice);
 		return;
 	}
+
+	std::string serial;
 
 	if (res == 21)
 	{
@@ -251,8 +257,25 @@ void dualsense_pad_handler::check_add_device(hid_device* hidDevice, std::string_
 	device->has_calib_data = true;
 	device->path           = path;
 
+	// Get feature set
+	if (const hid_device_info* info = hid_get_device_info(device->hidDevice))
+	{
+		if (info->product_id == SONY_DUALSENSE_ID_1.m_pid)
+		{
+			device->feature_set = DualSenseDevice::DualSenseFeatureSet::Edge;
+			dualsense_log.notice("check_add_device: device is DualSense Edge: vid=0x%x, pid=0x%x, path='%s'", info->vendor_id, info->product_id, path);
+		}
+	}
+	else
+	{
+		dualsense_log.warning("check_add_device: hid_get_device_info failed for determining feature set! Reason: %s", hid_error(hidDevice));
+	}
+
 	// Activate
-	send_output_report(device);
+	if (send_output_report(device) == -1)
+	{
+		dualsense_log.error("check_add_device: send_output_report failed! Reason: %s", hid_error(hidDevice));
+	}
 
 	// Get bluetooth information
 	get_data(device);
@@ -322,7 +345,7 @@ dualsense_pad_handler::DataStatus dualsense_pad_handler::get_data(DualSenseDevic
 
 	std::array<u8, 128> buf{};
 
-	const int res = hid_read(device->hidDevice, buf.data(), 128);
+	const int res = hid_read(device->hidDevice, buf.data(), buf.size());
 
 	if (res == -1)
 	{
@@ -414,7 +437,7 @@ dualsense_pad_handler::DataStatus dualsense_pad_handler::get_data(DualSenseDevic
 		}
 	}
 
-	memcpy(device->padData.data(), &buf[offset], 64);
+	memcpy(device->padData.data(), &buf[offset], device->padData.size());
 	return DataStatus::NewData;
 }
 
@@ -544,7 +567,7 @@ bool dualsense_pad_handler::get_calibration_data(DualSenseDevice* dualsense_devi
 
 	// Make sure data 'looks' valid, dongle will report invalid calibration data with no controller connected
 
-	for (const auto& data : dualsense_device->calib_data)
+	for (const CalibData& data : dualsense_device->calib_data)
 	{
 		if (data.sens_denom == 0)
 		{
@@ -645,7 +668,7 @@ void dualsense_pad_handler::get_extended_info(const pad_ensemble& binding)
 	pad->m_battery_level = dualsense_device->battery_level;
 	pad->m_cable_state   = dualsense_device->cable_state;
 
-	auto& buf = dualsense_device->padData;
+	const std::array<u8, 64>& buf = dualsense_device->padData;
 
 	// these values come already calibrated, all we need to do is convert to ds3 range
 
@@ -680,114 +703,9 @@ std::unordered_map<u64, u16> dualsense_pad_handler::get_button_values(const std:
 	if (!dualsense_dev)
 		return keyBuffer;
 
-	auto buf = dualsense_dev->padData;
+	const std::array<u8, 64>& buf = dualsense_dev->padData;
 
-	if (dualsense_dev->data_mode == DualSenseDevice::DualSenseDataMode::Simple)
-	{
-		// Left Stick X Axis
-		keyBuffer[DualSenseKeyCodes::LSXNeg] = Clamp0To255((127.5f - buf[0]) * 2.0f);
-		keyBuffer[DualSenseKeyCodes::LSXPos] = Clamp0To255((buf[0] - 127.5f) * 2.0f);
-
-		// Left Stick Y Axis (Up is the negative for some reason)
-		keyBuffer[DualSenseKeyCodes::LSYNeg] = Clamp0To255((buf[1] - 127.5f) * 2.0f);
-		keyBuffer[DualSenseKeyCodes::LSYPos] = Clamp0To255((127.5f - buf[1]) * 2.0f);
-
-		// Right Stick X Axis
-		keyBuffer[DualSenseKeyCodes::RSXNeg] = Clamp0To255((127.5f - buf[2]) * 2.0f);
-		keyBuffer[DualSenseKeyCodes::RSXPos] = Clamp0To255((buf[2] - 127.5f) * 2.0f);
-
-		// Right Stick Y Axis (Up is the negative for some reason)
-		keyBuffer[DualSenseKeyCodes::RSYNeg] = Clamp0To255((buf[3] - 127.5f) * 2.0f);
-		keyBuffer[DualSenseKeyCodes::RSYPos] = Clamp0To255((127.5f - buf[3]) * 2.0f);
-
-		// bleh, dpad in buffer is stored in a different state
-		u8 data = buf[4] & 0xf;
-		switch (data)
-		{
-		case 0x08: // none pressed
-			keyBuffer[DualSenseKeyCodes::Up]    = 0;
-			keyBuffer[DualSenseKeyCodes::Down]  = 0;
-			keyBuffer[DualSenseKeyCodes::Left]  = 0;
-			keyBuffer[DualSenseKeyCodes::Right] = 0;
-			break;
-		case 0x07: // NW...left and up
-			keyBuffer[DualSenseKeyCodes::Up]    = 255;
-			keyBuffer[DualSenseKeyCodes::Down]  = 0;
-			keyBuffer[DualSenseKeyCodes::Left]  = 255;
-			keyBuffer[DualSenseKeyCodes::Right] = 0;
-			break;
-		case 0x06: // W..left
-			keyBuffer[DualSenseKeyCodes::Up]    = 0;
-			keyBuffer[DualSenseKeyCodes::Down]  = 0;
-			keyBuffer[DualSenseKeyCodes::Left]  = 255;
-			keyBuffer[DualSenseKeyCodes::Right] = 0;
-			break;
-		case 0x05: // SW..left down
-			keyBuffer[DualSenseKeyCodes::Up]    = 0;
-			keyBuffer[DualSenseKeyCodes::Down]  = 255;
-			keyBuffer[DualSenseKeyCodes::Left]  = 255;
-			keyBuffer[DualSenseKeyCodes::Right] = 0;
-			break;
-		case 0x04: // S..down
-			keyBuffer[DualSenseKeyCodes::Up]    = 0;
-			keyBuffer[DualSenseKeyCodes::Down]  = 255;
-			keyBuffer[DualSenseKeyCodes::Left]  = 0;
-			keyBuffer[DualSenseKeyCodes::Right] = 0;
-			break;
-		case 0x03: // SE..down and right
-			keyBuffer[DualSenseKeyCodes::Up]    = 0;
-			keyBuffer[DualSenseKeyCodes::Down]  = 255;
-			keyBuffer[DualSenseKeyCodes::Left]  = 0;
-			keyBuffer[DualSenseKeyCodes::Right] = 255;
-			break;
-		case 0x02: // E... right
-			keyBuffer[DualSenseKeyCodes::Up]    = 0;
-			keyBuffer[DualSenseKeyCodes::Down]  = 0;
-			keyBuffer[DualSenseKeyCodes::Left]  = 0;
-			keyBuffer[DualSenseKeyCodes::Right] = 255;
-			break;
-		case 0x01: // NE.. up right
-			keyBuffer[DualSenseKeyCodes::Up]    = 255;
-			keyBuffer[DualSenseKeyCodes::Down]  = 0;
-			keyBuffer[DualSenseKeyCodes::Left]  = 0;
-			keyBuffer[DualSenseKeyCodes::Right] = 255;
-			break;
-		case 0x00: // n.. up
-			keyBuffer[DualSenseKeyCodes::Up]    = 255;
-			keyBuffer[DualSenseKeyCodes::Down]  = 0;
-			keyBuffer[DualSenseKeyCodes::Left]  = 0;
-			keyBuffer[DualSenseKeyCodes::Right] = 0;
-			break;
-		default:
-			fmt::throw_exception("dualsense dpad state encountered unexpected input");
-		}
-
-		data = buf[4] >> 4;
-		keyBuffer[DualSenseKeyCodes::Square]   = ((data & 0x01) != 0) ? 255 : 0;
-		keyBuffer[DualSenseKeyCodes::Cross]    = ((data & 0x02) != 0) ? 255 : 0;
-		keyBuffer[DualSenseKeyCodes::Circle]   = ((data & 0x04) != 0) ? 255 : 0;
-		keyBuffer[DualSenseKeyCodes::Triangle] = ((data & 0x08) != 0) ? 255 : 0;
-
-		data = buf[5];
-		keyBuffer[DualSenseKeyCodes::L1]      = ((data & 0x01) != 0) ? 255 : 0;
-		keyBuffer[DualSenseKeyCodes::R1]      = ((data & 0x02) != 0) ? 255 : 0;
-		//keyBuffer[DualSenseKeyCodes::L2]      = ((data & 0x04) != 0) ? 255 : 0; // active when L2 is pressed
-		//keyBuffer[DualSenseKeyCodes::R2]      = ((data & 0x08) != 0) ? 255 : 0; // active when R2 is pressed
-		keyBuffer[DualSenseKeyCodes::Share]   = ((data & 0x10) != 0) ? 255 : 0;
-		keyBuffer[DualSenseKeyCodes::Options] = ((data & 0x20) != 0) ? 255 : 0;
-		keyBuffer[DualSenseKeyCodes::L3]      = ((data & 0x40) != 0) ? 255 : 0;
-		keyBuffer[DualSenseKeyCodes::R3]      = ((data & 0x80) != 0) ? 255 : 0;
-
-		data = buf[6];
-		keyBuffer[DualSenseKeyCodes::PSButton] = ((data & 0x01) != 0) ? 255 : 0;
-		keyBuffer[DualSenseKeyCodes::TouchPad] = ((data & 0x02) != 0) ? 255 : 0;
-		keyBuffer[DualSenseKeyCodes::Mic]      = ((data & 0x04) != 0) ? 255 : 0;
-
-		keyBuffer[DualSenseKeyCodes::L2] = buf[7];
-		keyBuffer[DualSenseKeyCodes::R2] = buf[8];
-
-		return keyBuffer;
-	}
+	const bool is_simple_mode = dualsense_dev->data_mode == DualSenseDevice::DualSenseDataMode::Simple;
 
 	// Left Stick X Axis
 	keyBuffer[DualSenseKeyCodes::LSXNeg] = Clamp0To255((127.5f - buf[0]) * 2.0f);
@@ -805,10 +723,10 @@ std::unordered_map<u64, u16> dualsense_pad_handler::get_button_values(const std:
 	keyBuffer[DualSenseKeyCodes::RSYNeg] = Clamp0To255((buf[3] - 127.5f) * 2.0f);
 	keyBuffer[DualSenseKeyCodes::RSYPos] = Clamp0To255((127.5f - buf[3]) * 2.0f);
 
-	keyBuffer[DualSenseKeyCodes::L2] = buf[4];
-	keyBuffer[DualSenseKeyCodes::R2] = buf[5];
+	keyBuffer[DualSenseKeyCodes::L2] = buf[is_simple_mode ? 7 : 4];
+	keyBuffer[DualSenseKeyCodes::R2] = buf[is_simple_mode ? 8 : 5];
 
-	u8 data = buf[7] & 0xf;
+	u8 data = buf[is_simple_mode ? 4 : 7] & 0xf;
 	switch (data)
 	{
 	case 0x08: // none pressed
@@ -869,13 +787,13 @@ std::unordered_map<u64, u16> dualsense_pad_handler::get_button_values(const std:
 		fmt::throw_exception("dualsense dpad state encountered unexpected input");
 	}
 
-	data = buf[7] >> 4;
+	data = buf[is_simple_mode ? 4 : 7] >> 4;
 	keyBuffer[DualSenseKeyCodes::Square]   = ((data & 0x01) != 0) ? 255 : 0;
 	keyBuffer[DualSenseKeyCodes::Cross]    = ((data & 0x02) != 0) ? 255 : 0;
 	keyBuffer[DualSenseKeyCodes::Circle]   = ((data & 0x04) != 0) ? 255 : 0;
 	keyBuffer[DualSenseKeyCodes::Triangle] = ((data & 0x08) != 0) ? 255 : 0;
 
-	data = buf[8];
+	data = buf[is_simple_mode ? 5 : 8];
 	keyBuffer[DualSenseKeyCodes::L1]      = ((data & 0x01) != 0) ? 255 : 0;
 	keyBuffer[DualSenseKeyCodes::R1]      = ((data & 0x02) != 0) ? 255 : 0;
 	//keyBuffer[DualSenseKeyCodes::L2]      = ((data & 0x04) != 0) ? 255 : 0; // active when L2 is pressed
@@ -885,10 +803,18 @@ std::unordered_map<u64, u16> dualsense_pad_handler::get_button_values(const std:
 	keyBuffer[DualSenseKeyCodes::L3]      = ((data & 0x40) != 0) ? 255 : 0;
 	keyBuffer[DualSenseKeyCodes::R3]      = ((data & 0x80) != 0) ? 255 : 0;
 
-	data = buf[9];
+	data = buf[is_simple_mode ? 6 : 9];
 	keyBuffer[DualSenseKeyCodes::PSButton] = ((data & 0x01) != 0) ? 255 : 0;
 	keyBuffer[DualSenseKeyCodes::TouchPad] = ((data & 0x02) != 0) ? 255 : 0;
 	keyBuffer[DualSenseKeyCodes::Mic]      = ((data & 0x04) != 0) ? 255 : 0;
+
+	if (dualsense_dev->feature_set == DualSenseDevice::DualSenseFeatureSet::Edge)
+	{
+		keyBuffer[DualSenseKeyCodes::EdgeFnL] = ((data & 0x10) != 0) ? 255 : 0;
+		keyBuffer[DualSenseKeyCodes::EdgeFnR] = ((data & 0x20) != 0) ? 255 : 0;
+		keyBuffer[DualSenseKeyCodes::EdgeLB] = ((data & 0x40) != 0) ? 255 : 0;
+		keyBuffer[DualSenseKeyCodes::EdgeRB] = ((data & 0x80) != 0) ? 255 : 0;
+	}
 
 	return keyBuffer;
 }
@@ -927,7 +853,7 @@ int dualsense_pad_handler::send_output_report(DualSenseDevice* device)
 
 	const cfg_pad* config = device->config;
 	if (config == nullptr)
-		return -2; // hid_write and hid_write_control return -1 on error
+		return -2; // hid_write returns -1 on error
 
 	output_report_common common{};
 
@@ -1030,14 +956,12 @@ int dualsense_pad_handler::send_output_report(DualSenseDevice* device)
 
 		return hid_write(device->hidDevice, &report.report_id, DUALSENSE_BLUETOOTH_REPORT_SIZE);
 	}
-	else
-	{
-		output_report_usb report{};
-		report.report_id = 0x02; // report id for usb
-		report.common    = common;
 
-		return hid_write(device->hidDevice, &report.report_id, DUALSENSE_USB_REPORT_SIZE);
-	}
+	output_report_usb report{};
+	report.report_id = 0x02; // report id for usb
+	report.common    = common;
+
+	return hid_write(device->hidDevice, &report.report_id, DUALSENSE_USB_REPORT_SIZE);
 }
 
 void dualsense_pad_handler::apply_pad_data(const pad_ensemble& binding)

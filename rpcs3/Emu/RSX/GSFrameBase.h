@@ -25,11 +25,10 @@ public:
 	virtual void flip(draw_context_t ctx, bool skip_frame = false) = 0;
 	virtual int client_width() = 0;
 	virtual int client_height() = 0;
-	virtual double client_device_pixel_ratio() const = 0;
 
 	virtual display_handle_t handle() const = 0;
 
 	virtual bool can_consume_frame() const = 0;
-	virtual void present_frame(std::vector<u8>& data, const u32 width, const u32 height, bool is_bgra) const = 0;
-	virtual void take_screenshot(const std::vector<u8> sshot_data, const u32 sshot_width, const u32 sshot_height, bool is_bgra) = 0;
+	virtual void present_frame(std::vector<u8>& data, u32 pitch, u32 width, u32 height, bool is_bgra) const = 0;
+	virtual void take_screenshot(const std::vector<u8> sshot_data, u32 sshot_width, u32 sshot_height, bool is_bgra) = 0;
 };

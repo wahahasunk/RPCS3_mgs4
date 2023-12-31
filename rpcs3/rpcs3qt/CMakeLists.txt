@@ -1,7 +1,4 @@
-﻿# prevent WolfSSL from warning about not having harden options
-add_compile_definitions(WC_NO_HARDEN)
-
-set(SRC_FILES
+add_library(rpcs3_ui STATIC
     about_dialog.cpp
     auto_pause_settings_dialog.cpp
     breakpoint_handler.cpp
@@ -20,29 +17,41 @@ set(SRC_FILES
     downloader.cpp
     _discord_utils.cpp
     emu_settings.cpp
+    elf_memory_dumping_dialog.cpp
+    emulated_pad_settings_dialog.cpp
     fatal_error_dialog.cpp
     find_dialog.cpp
+    flow_layout.cpp
+    flow_widget.cpp
+    flow_widget_item.cpp
     game_compatibility.cpp
     game_list.cpp
+    game_list_base.cpp
+    game_list_delegate.cpp
     game_list_frame.cpp
     game_list_grid.cpp
-    game_list_grid_delegate.cpp
+    game_list_grid_item.cpp
+    game_list_table.cpp
     gui_application.cpp
     gl_gs_frame.cpp
     gs_frame.cpp
     gui_settings.cpp
+    infinity_dialog.cpp
     input_dialog.cpp
     instruction_editor_dialog.cpp
     ipc_settings_dialog.cpp
     kernel_explorer.cpp
     localized.cpp
-    localized_emu.h
+    localized_emu.cpp
     log_frame.cpp
     log_viewer.cpp
     main_window.cpp
     memory_string_searcher.cpp
     memory_viewer_panel.cpp
     microphone_creator.cpp
+    midi_creator.cpp
+    movie_item.cpp
+    movie_item_base.cpp
     msg_dialog_frame.cpp
     osk_dialog_frame.cpp
     pad_led_settings_dialog.cpp
@@ -56,7 +65,7 @@ set(SRC_FILES
     progress_indicator.cpp
     qt_camera_error_handler.cpp
     qt_camera_handler.cpp
-    qt_camera_video_surface.cpp
+    qt_camera_video_sink.cpp
     qt_music_error_handler.cpp
     qt_music_handler.cpp
     qt_utils.cpp
@@ -69,6 +78,7 @@ set(SRC_FILES
     save_data_info_dialog.cpp
     save_data_list_dialog.cpp
     save_manager_dialog.cpp
+    screenshot_item.cpp
     screenshot_manager_dialog.cpp
     screenshot_preview.cpp
     sendmessage_dialog_frame.cpp
@@ -81,6 +91,7 @@ set(SRC_FILES
     skylander_dialog.cpp
     syntax_highlighter.cpp
     system_cmd_dialog.cpp
+    table_item_delegate.cpp
     tooltips.cpp
     trophy_manager_dialog.cpp
     trophy_notification_frame.cpp
@@ -95,9 +106,7 @@ set(SRC_FILES
     vfs_dialog_usb_input.cpp
     vfs_dialog_usb_tab.cpp
     welcome_dialog.cpp
-)
 
-set(UI_FILES
     about_dialog.ui
     camera_settings_dialog.ui
     main_window.ui
@@ -109,15 +118,14 @@ set(UI_FILES
     settings_dialog.ui
     shortcut_dialog.ui
     welcome_dialog.ui
+
+    "../resources.qrc"
 )
 
-set(RES_FILES "../resources.qrc")
-
 if(WIN32)
-    list(APPEND RES_FILES "../windows.qrc")
+    target_sources(rpcs3_ui PUBLIC "../windows.qrc")
+    target_compile_definitions(rpcs3_ui PRIVATE UNICODE _UNICODE)
 endif()
-
-add_library(rpcs3_ui ${SRC_FILES} ${UI_FILES} ${RES_FILES})
 
 set_target_properties(rpcs3_ui
     PROPERTIES
@@ -133,7 +141,7 @@ target_compile_definitions(rpcs3_ui PRIVATE WIN32_LEAN_AND_MEAN)
 
 target_link_libraries(rpcs3_ui
     PUBLIC
-        3rdparty::qt5 3rdparty::yaml-cpp
+        3rdparty::qt6 3rdparty::yaml-cpp
 
     PRIVATE
         rpcs3_emu
@@ -144,4 +152,5 @@ target_link_libraries(rpcs3_ui
         3rdparty::libpng
         3rdparty::7z
         3rdparty::wolfssl
-        3rdparty::libcurl)
+        3rdparty::libcurl
+        3rdparty::rtmidi)

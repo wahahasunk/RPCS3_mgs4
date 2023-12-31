@@ -34,9 +34,7 @@ void cfg_camera::save() const
 {
 	camera_log.notice("Saving camera config to '%s'", path);
 
-	fs::pending_file cfg_file(path);
-
-	if (!cfg_file.file || (cfg_file.file.write(to_string()), !cfg_file.commit()))
+	if (!cfg::node::save(path))
 	{
 		camera_log.error("Failed to save camera config to '%s' (error=%s)", path, fs::g_tls_error);
 	}
@@ -67,7 +65,7 @@ void cfg_camera::set_camera_setting(const std::string& camera, const camera_sett
 
 std::string cfg_camera::camera_setting::to_string() const
 {
-	return fmt::format("%d,%d,%f,%f,%d,%d,%d", width, height, min_fps, max_fps, format, pixel_aspect_width, pixel_aspect_height);
+	return fmt::format("%d,%d,%f,%f,%d", width, height, min_fps, max_fps, format);
 }
 
 void cfg_camera::camera_setting::from_string(const std::string& text)
@@ -112,16 +110,12 @@ void cfg_camera::camera_setting::from_string(const std::string& text)
 		!to_integer(::at32(list, 1), height) ||
 		!to_double(::at32(list, 2), min_fps) ||
 		!to_double(::at32(list, 3), max_fps) ||
-		!to_integer(::at32(list, 4), format) ||
-		!to_integer(::at32(list, 5), pixel_aspect_width) ||
-		!to_integer(::at32(list, 6), pixel_aspect_height))
+		!to_integer(::at32(list, 4), format))
 	{
 		width = 0;
 		height = 0;
 		min_fps = 0;
 		max_fps = 0;
 		format = 0;
-		pixel_aspect_width = 0;
-		pixel_aspect_height = 0;
 	}
 }

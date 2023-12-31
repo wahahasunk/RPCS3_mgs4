@@ -70,14 +70,16 @@ namespace vm
 	// Memory mutex acknowledgement
 	thread_local atomic_t<cpu_thread*>* g_tls_locked = nullptr;
 
-	// "Unique locked" range lock, as opposed to "shared" range locks from set
-	atomic_t<u64> g_range_lock = 0;
-
 	// Memory mutex: passive locks
 	std::array<atomic_t<cpu_thread*>, g_cfg.core.ppu_threads.max> g_locks{};
 
 	// Range lock slot allocation bits
-	atomic_t<u64> g_range_lock_bits{};
+	atomic_t<u64, 64> g_range_lock_bits[2]{};
+
+	auto& get_range_lock_bits(bool is_exclusive_range)
+	{
+		return g_range_lock_bits[+is_exclusive_range];
+	}
 
 	// Memory range lock slots (sparse atomics)
 	atomic_t<u64, 64> g_range_lock_set[64]{};
@@ -138,9 +140,10 @@ namespace vm
 
 	atomic_t<u64, 64>* alloc_range_lock()
 	{
-		const auto [bits, ok] = g_range_lock_bits.fetch_op([](u64& bits)
+		const auto [bits, ok] = get_range_lock_bits(false).fetch_op([](u64& bits)
 		{
-			if (~bits) [[likely]]
+			// MSB is reserved for locking with memory setting changes
+			if ((~(bits | (bits + 1))) << 1) [[likely]]
 			{
 				bits |= bits + 1;
 				return true;
@@ -157,6 +160,9 @@ namespace vm
 		return &g_range_lock_set[std::countr_one(bits)];
 	}
 
+	template <typename F>
+	static u64 for_all_range_locks(u64 input, F func);
+
 	void range_lock_internal(atomic_t<u64, 64>* range_lock, u32 begin, u32 size)
 	{
 		perf_meter<"RHW_LOCK"_u64> perf0(0);
@@ -170,30 +176,41 @@ namespace vm
 
 		for (u64 i = 0;; i++)
 		{
-			const u64 lock_val = g_range_lock.load();
 			const u64 is_share = g_shmem[begin >> 16].load();
 
-			u64 lock_addr = static_cast<u32>(lock_val); // -> u64
-			u32 lock_size = static_cast<u32>(lock_val << range_bits >> (range_bits + 32));
-
-			u64 addr = begin;
-
-			if ((lock_val & range_full_mask) == range_locked) [[likely]]
+			const u64 busy = for_all_range_locks(get_range_lock_bits(true), [&](u64 addr_exec, u32 size_exec)
 			{
-				lock_size = 128;
+				u64 addr = begin;
 
-				if (is_share)
+				if ((size_exec & (range_full_mask >> 32)) == (range_locked >> 32)) [[likely]]
 				{
-					addr = static_cast<u16>(addr) | is_share;
-					lock_addr = lock_val;
+					size_exec = 128;
+
+					if (is_share)
+					{
+						addr = static_cast<u16>(addr) | is_share;
+					}
 				}
-			}
 
-			if (addr + size <= lock_addr || addr >= lock_addr + lock_size) [[likely]]
+				size_exec = (size_exec << range_bits) >> range_bits;
+
+				// TODO (currently not possible): handle 2 64K pages (inverse range), or more pages
+				if (u64 is_shared = g_shmem[addr_exec >> 16]) [[unlikely]]
+				{
+					addr_exec = static_cast<u16>(addr_exec) | is_shared;
+				}
+
+				if (addr <= addr_exec + size_exec - 1 && addr_exec <= addr + size - 1) [[unlikely]]
+				{
+					return 1;
+				}
+
+				return 0;
+			});
+
+			if (!busy) [[likely]]
 			{
-				const u64 new_lock_val = g_range_lock.load();
-
-				if (vm::check_addr(begin, vm::page_readable, size) && (!new_lock_val || new_lock_val == lock_val)) [[likely]]
+				if (vm::check_addr(begin, vm::page_readable, size)) [[likely]]
 				{
 					break;
 				}
@@ -265,7 +282,7 @@ namespace vm
 
 		// Use ptr difference to determine location
 		const auto diff = range_lock - g_range_lock_set;
-		g_range_lock_bits &= ~(1ull << diff);
+		g_range_lock_bits[0] &= ~(1ull << diff);
 	}
 
 	template <typename F>
@@ -295,13 +312,13 @@ namespace vm
 		return result;
 	}
 
-	static void _lock_main_range_lock(u64 flags, u32 addr, u32 size)
+	static atomic_t<u64, 64>* _lock_main_range_lock(u64 flags, u32 addr, u32 size)
 	{
 		// Shouldn't really happen
 		if (size == 0)
 		{
 			vm_log.warning("Tried to lock empty range (flags=0x%x, addr=0x%x)", flags >> 32, addr);
-			return;
+			return {};
 		}
 
 		// Limit to <512 MiB at once; make sure if it operates on big amount of data, it's page-aligned
@@ -311,7 +328,8 @@ namespace vm
 		}
 
 		// Block or signal new range locks
-		g_range_lock = addr | u64{size} << 32 | flags;
+		auto range_lock = &*std::prev(std::end(vm::g_range_lock_set));
+		*range_lock = addr | u64{size} << 32 | flags;
 
 		utils::prefetch_read(g_range_lock_set + 0);
 		utils::prefetch_read(g_range_lock_set + 2);
@@ -319,7 +337,7 @@ namespace vm
 
 		const auto range = utils::address_range::start_length(addr, size);
 
-		u64 to_clear = g_range_lock_bits.load();
+		u64 to_clear = get_range_lock_bits(false).load();
 
 		while (to_clear)
 		{
@@ -340,22 +358,21 @@ namespace vm
 
 			utils::pause();
 		}
+
+		return range_lock;
 	}
 
 	void passive_lock(cpu_thread& cpu)
 	{
+		ensure(cpu.state & cpu_flag::wait);
+
 		bool ok = true;
 
 		if (!g_tls_locked || *g_tls_locked != &cpu) [[unlikely]]
 		{
 			_register_lock(&cpu);
 
-			if (cpu.state & cpu_flag::memory) [[likely]]
-			{
-				cpu.state -= cpu_flag::memory;
-			}
-
-			if (!g_range_lock)
+			if (!get_range_lock_bits(true))
 			{
 				return;
 			}
@@ -367,21 +384,25 @@ namespace vm
 		{
 			for (u64 i = 0;; i++)
 			{
+				if (cpu.is_paused())
+				{
+					// Assume called from cpu_thread::check_state(), it can handle the pause flags better
+					return;
+				}
+
+				if (!get_range_lock_bits(true)) [[likely]]
+				{
+					return;
+				}
+
 				if (i < 100)
 					busy_wait(200);
 				else
 					std::this_thread::yield();
 
-				if (g_range_lock)
+				if (cpu_flag::wait - cpu.state)
 				{
-					continue;
-				}
-
-				cpu.state -= cpu_flag::memory;
-
-				if (!g_range_lock) [[likely]]
-				{
-					return;
+					cpu.state += cpu_flag::wait;
 				}
 			}
 		}
@@ -427,18 +448,22 @@ namespace vm
 		}
 	}
 
-	writer_lock::writer_lock()
-		: writer_lock(0, 1)
+	writer_lock::writer_lock() noexcept
+		: writer_lock(0, nullptr, 1)
 	{
 	}
 
-	writer_lock::writer_lock(u32 const addr, u32 const size, u64 const flags)
+	writer_lock::writer_lock(u32 const addr, atomic_t<u64, 64>* range_lock, u32 const size, u64 const flags) noexcept
+		: range_lock(range_lock)
 	{
-		auto cpu = get_current_cpu_thread();
+		cpu_thread* cpu{};
 
-		if (cpu)
+		if (g_tls_locked)
 		{
-			if (!g_tls_locked || *g_tls_locked != cpu || cpu->state & cpu_flag::wait)
+			cpu = get_current_cpu_thread();
+			AUDIT(cpu);
+
+			if (*g_tls_locked != cpu || cpu->state & cpu_flag::wait)
 			{
 				cpu = nullptr;
 			}
@@ -448,18 +473,51 @@ namespace vm
 			}
 		}
 
+		bool to_prepare_memory = addr >= 0x10000;
+
 		for (u64 i = 0;; i++)
 		{
-			if (g_range_lock || !g_range_lock.compare_and_swap_test(0, addr | u64{size} << 32 | flags))
+			auto& bits = get_range_lock_bits(true);
+
+			if (!range_lock || addr < 0x10000)
 			{
-				if (i < 100)
-					busy_wait(200);
-				else
-					std::this_thread::yield();
+				if (!bits && bits.compare_and_swap_test(0, u64{umax}))
+				{
+					break;
+				}
 			}
 			else
 			{
-				break;
+				range_lock->release(addr | u64{size} << 32 | flags);
+
+				const auto diff = range_lock - g_range_lock_set;
+
+				if (bits != umax && !bits.bit_test_set(static_cast<u32>(diff)))
+				{
+					break;
+				}
+
+				range_lock->release(0);
+			}
+
+			if (i < 100)
+			{
+				if (to_prepare_memory)
+				{
+					// We have some spare time, prepare cache lines (todo: reservation tests here)
+					utils::prefetch_write(vm::get_super_ptr(addr));
+					utils::prefetch_write(vm::get_super_ptr(addr) + 64);
+					to_prepare_memory = false;
+				}
+
+				busy_wait(200);
+			}
+			else
+			{
+				std::this_thread::yield();
+
+				// Thread may have been switched or the cache clue has been undermined, cache needs to be prapred again
+				to_prepare_memory = true;
 			}
 		}
 
@@ -469,7 +527,7 @@ namespace vm
 
 			for (auto lock = g_locks.cbegin(), end = lock + g_cfg.core.ppu_threads; lock != end; lock++)
 			{
-				if (auto ptr = +*lock; ptr && !(ptr->state & cpu_flag::memory))
+				if (auto ptr = +*lock; ptr && ptr->state.none_of(cpu_flag::wait + cpu_flag::memory))
 				{
 					ptr->state.test_and_set(cpu_flag::memory);
 				}
@@ -487,19 +545,19 @@ namespace vm
 			utils::prefetch_read(g_range_lock_set + 2);
 			utils::prefetch_read(g_range_lock_set + 4);
 
-			u64 to_clear = g_range_lock_bits.load();
+			u64 to_clear = get_range_lock_bits(false);
 
 			u64 point = addr1 / 128;
 
 			while (true)
 			{
-				to_clear = for_all_range_locks(to_clear, [&](u64 addr2, u32 size2)
+				to_clear = for_all_range_locks(to_clear & ~get_range_lock_bits(true), [&](u64 addr2, u32 size2)
 				{
 					// Split and check every 64K page separately
 					for (u64 hi = addr2 >> 16, max = (addr2 + size2 - 1) >> 16; hi <= max; hi++)
 					{
 						u64 addr3 = addr2;
-						u32 size3 = std::min<u64>(addr2 + size2, utils::align(addr2, 0x10000)) - addr2;
+						u64 size3 = std::min<u64>(addr2 + size2, utils::align(addr2, 0x10000)) - addr2;
 
 						if (u64 is_shared = g_shmem[hi]) [[unlikely]]
 						{
@@ -523,6 +581,13 @@ namespace vm
 					break;
 				}
 
+				if (to_prepare_memory)
+				{
+					utils::prefetch_write(vm::get_super_ptr(addr));
+					utils::prefetch_write(vm::get_super_ptr(addr) + 64);
+					to_prepare_memory = false;
+				}
+
 				utils::pause();
 			}
 
@@ -532,6 +597,13 @@ namespace vm
 				{
 					while (!(ptr->state & cpu_flag::wait))
 					{
+						if (to_prepare_memory)
+						{
+							utils::prefetch_write(vm::get_super_ptr(addr));
+							utils::prefetch_write(vm::get_super_ptr(addr) + 64);
+							to_prepare_memory = false;
+						}
+
 						utils::pause();
 					}
 				}
@@ -542,11 +614,6 @@ namespace vm
 		{
 			cpu->state -= cpu_flag::memory + cpu_flag::wait;
 		}
-	}
-
-	writer_lock::~writer_lock()
-	{
-		g_range_lock = 0;
 	}
 
 	u64 reservation_lock_internal(u32 addr, atomic_t<u64>& res)
@@ -672,7 +739,7 @@ namespace vm
 		const bool is_noop = bflags & page_size_4k && utils::c_page_size > 4096;
 
 		// Lock range being mapped
-		_lock_main_range_lock(range_allocation, addr, size);
+		auto range_lock = _lock_main_range_lock(range_allocation, addr, size);
 
 		if (shm && shm->flags() != 0 && shm->info++)
 		{
@@ -788,6 +855,8 @@ namespace vm
 				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)", addr, size, flags, i * 4096);
 			}
 		}
+
+		range_lock->release(0);
 	}
 
 	bool page_protect(u32 addr, u32 size, u8 flags_test, u8 flags_set, u8 flags_clear)
@@ -845,7 +914,7 @@ namespace vm
 						safe_bits |= range_writable;
 
 					// Protect range locks from observing changes in memory protection
-					_lock_main_range_lock(safe_bits, start * 4096, page_size);
+					auto range_lock = _lock_main_range_lock(safe_bits, start * 4096, page_size);
 
 					for (u32 j = start; j < i; j++)
 					{
@@ -857,6 +926,8 @@ namespace vm
 						const auto protection = start_value & page_writable ? utils::protection::rw : (start_value & page_readable ? utils::protection::ro : utils::protection::no);
 						utils::memory_protect(g_base_addr + start * 4096, page_size, protection);
 					}
+
+					range_lock->release(0);
 				}
 
 				start_value = new_val;
@@ -904,7 +975,7 @@ namespace vm
 		}
 
 		// Protect range locks from actual memory protection changes
-		_lock_main_range_lock(range_allocation, addr, size);
+		auto range_lock = _lock_main_range_lock(range_allocation, addr, size);
 
 		if (shm && shm->flags() != 0 && g_shmem[addr >> 16])
 		{
@@ -965,6 +1036,7 @@ namespace vm
 			}
 		}
 
+		range_lock->release(0);
 		return size;
 	}
 
@@ -1148,7 +1220,7 @@ namespace vm
 		{
 			auto fill64 = [](u8* ptr, u64 data, usz count)
 			{
-#ifdef _M_X64
+#if defined(_M_X64) && defined(_MSC_VER)
 				__stosq(reinterpret_cast<u64*>(ptr), data, count);
 #elif defined(ARCH_X64)
 				__asm__ ("mov %0, %%rdi; mov %1, %%rax; mov %2, %%rcx; rep stosq;"
@@ -1545,49 +1617,87 @@ namespace vm
 		const v128 _5 = _1 | _2;
 		const v128 _6 = _3 | _4;
 		const v128 _7 = _5 | _6;
-		return _7 == v128{};
+		return gv_testz(_7);
 	}
 
-	static void save_memory_bytes(utils::serial& ar, const u8* ptr, usz size)
+	static void serialize_memory_bytes(utils::serial& ar, u8* ptr, usz size)
 	{
-		AUDIT(ar.is_writing() && !(size % 1024));
+		ensure((size % 4096) == 0);
 
-		for (; size; ptr += 128 * 8, size -= 128 * 8)
+		constexpr usz byte_of_pages = 128 * 8;
+
+		std::vector<u8> bit_array(size / byte_of_pages);
+
+		if (ar.is_writing())
 		{
-			ar(u8{}); // bitmap of 1024 bytes (bit is 128-byte)
-			u8 bitmap = 0, count = 0;
+			auto data_ptr = ptr;
 
-			for (usz i = 0, end = std::min<usz>(size, 128 * 8); i < end; i += 128)
+			for (usz iter_count = 0; iter_count < bit_array.size(); iter_count++, data_ptr += byte_of_pages)
 			{
-				if (!check_cache_line_zero(ptr + i))
+				u8 bitmap = 0;
+
+				for (usz i = 0; i < byte_of_pages; i += 128 * 2)
 				{
-					bitmap |= 1u << (i / 128);
-					count++;
-					ar(std::span(ptr + i, 128));
+					const u64 sample64_1 = read_from_ptr<u64>(data_ptr, i);
+					const u64 sample64_2 = read_from_ptr<u64>(data_ptr, i + 128);
+
+					// Speed up testing in scenarios where it is likely non-zero data
+					if (sample64_1 && sample64_2)
+					{
+						bitmap |= 3u << (i / 128);
+						continue;
+					}
+
+					bitmap |= (check_cache_line_zero(data_ptr + i + 0) ? 0 : 1) << (i / 128);
+					bitmap |= (check_cache_line_zero(data_ptr + i + 128) ? 0 : 2) << (i / 128);
 				}
-			}
 
-			// Patch bitmap with correct value
-			*std::prev(&ar.data.back(), count * 128) = bitmap;
-		}
-	}
-
-	static void load_memory_bytes(utils::serial& ar, u8* ptr, usz size)
-	{
-		AUDIT(!ar.is_writing() && !(size % 128));
-
-		for (; size; ptr += 128 * 8, size -= 128 * 8)
-		{
-			const u8 bitmap{ar};
-
-			for (usz i = 0, end = std::min<usz>(size, 128 * 8); i < end; i += 128)
-			{
-				if (bitmap & (1u << (i / 128)))
-				{
-					ar(std::span(ptr + i, 128));
-				}
+				// bitmap of 1024 bytes (bit is 128-byte)
+				ar(bitmap);
+				bit_array[iter_count] = bitmap;
 			}
 		}
+		else
+		{
+			// Load bitmap
+			ar(std::span<u8>(bit_array.data(), bit_array.size()));
+		}
+
+		ar.breathe();
+
+		for (usz iter_count = 0; size; iter_count++, ptr += byte_of_pages)
+		{
+			size -= byte_of_pages;
+
+			const u8 bitmap = bit_array[iter_count];
+
+			for (usz i = 0; i < byte_of_pages;)
+			{
+				usz block_count = 0;
+
+				for (usz bit = i / 128; bit < sizeof(bitmap) * 8 && (bitmap & (1u << bit)) != 0;)
+				{
+					bit++;
+					block_count++;
+				}
+
+				if (!block_count)
+				{
+					i += 128;
+					continue;
+				}
+
+				ar(std::span<u8>(ptr + i, block_count * 128));
+				i += block_count * 128;
+			}
+
+			if (iter_count % 256 == 0)
+			{
+				ar.breathe();
+			}
+		}
+
+		ar.breathe();
 	}
 
 	void block_t::save(utils::serial& ar, std::map<utils::shm*, usz>& shared)
@@ -1610,14 +1720,15 @@ namespace vm
 				if (is_memory_compatible_for_copy_from_executable_optimization(addr, shm.first))
 				{
 					// Revert changes
-					ar.data.resize(ar.seek_end(sizeof(u32) * 2 + sizeof(memory_page)));
+					ar.data.resize(ar.data.size() - (sizeof(u32) * 2 + sizeof(memory_page)));
+					ar.seek_end();
 					vm_log.success("Removed memory block matching the memory of the executable from savestate. (addr=0x%x, size=0x%x)", addr, shm.first);
 					continue;
 				}
 
 				// Save raw binary image
 				const u32 guard_size = flags & stack_guarded ? 0x1000 : 0;
-				save_memory_bytes(ar, vm::get_super_ptr<const u8>(addr + guard_size), shm.first - guard_size * 2);
+				serialize_memory_bytes(ar, vm::get_super_ptr<u8>(addr + guard_size), shm.first - guard_size * 2);
 			}
 			else
 			{
@@ -1686,13 +1797,13 @@ namespace vm
 
 			// Map the memory through the same method as alloc() and falloc()
 			// Copy the shared handle unconditionally
-			ensure(try_alloc(addr0, pflags, size0, ::as_rvalue(flags & preallocated ? null_shm : shared[ar.operator usz()])));
+			ensure(try_alloc(addr0, pflags, size0, ::as_rvalue(flags & preallocated ? null_shm : shared[ar.pop<usz>()])));
 
 			if (flags & preallocated)
 			{
 				// Load binary image
 				const u32 guard_size = flags & stack_guarded ? 0x1000 : 0;
-				load_memory_bytes(ar, vm::get_super_ptr<u8>(addr0 + guard_size), size0 - guard_size * 2);
+				serialize_memory_bytes(ar, vm::get_super_ptr<u8>(addr0 + guard_size), size0 - guard_size * 2);
 			}
 		}
 	}
@@ -1731,12 +1842,12 @@ namespace vm
 	{
 		const u32 max = (0xC0000000 - size) & (0 - align);
 
-		if (size > 0xC0000000 - 0x20000000 || max < 0x20000000)
+		if (size > 0xC0000000 - 0x10000000 || max < 0x10000000)
 		{
 			return nullptr;
 		}
 
-		for (u32 addr = utils::align<u32>(0x20000000, align);; addr += align)
+		for (u32 addr = utils::align<u32>(0x10000000, align);; addr += align)
 		{
 			if (_test_map(addr, size))
 			{
@@ -1966,11 +2077,13 @@ namespace vm
 	{
 		auto* range_lock = alloc_range_lock(); // Released at the end of function
 
-		range_lock->store(begin | (u64{size} << 32));
+		auto mem_lock = &*std::prev(std::end(vm::g_range_lock_set));
 
-		for (u64 i = 0;; i++)
+		while (true)
 		{
-			const u64 lock_val = g_range_lock.load();
+			range_lock->store(begin | (u64{size} << 32));
+
+			const u64 lock_val = mem_lock->load();
 			const u64 is_share = g_shmem[begin >> 16].load();
 
 			u64 lock_addr = static_cast<u32>(lock_val); // -> u64
@@ -1993,7 +2106,7 @@ namespace vm
 			{
 				if (vm::check_addr(begin, is_write ? page_writable : page_readable, size)) [[likely]]
 				{
-					const u64 new_lock_val = g_range_lock.load();
+					const u64 new_lock_val = mem_lock->load();
 
 					if (!new_lock_val || new_lock_val == lock_val) [[likely]]
 					{
@@ -2026,8 +2139,6 @@ namespace vm
 			range_lock->release(0);
 
 			busy_wait(200);
-
-			range_lock->store(begin | (u64{size} << 32));
 		}
 
 		const bool result = try_access_internal(begin, ptr, size, is_write);
@@ -2059,8 +2170,8 @@ namespace vm
 
 			g_locations =
 			{
-				std::make_shared<block_t>(0x00010000, 0x1FFF0000, page_size_64k | preallocated), // main
-				std::make_shared<block_t>(0x20000000, 0x10000000, page_size_64k | bf0_0x1),		 // user 64k pages
+				std::make_shared<block_t>(0x00010000, 0x0FFF0000, page_size_64k | preallocated), // main
+				nullptr,		                                                                 // user 64k pages
 				nullptr,                                                                         // user 1m pages
 				nullptr,                                                                         // rsx context
 				std::make_shared<block_t>(0xC0000000, 0x10000000, page_size_64k | preallocated), // video
@@ -2071,7 +2182,7 @@ namespace vm
 			std::memset(g_reservations, 0, sizeof(g_reservations));
 			std::memset(g_shmem, 0, sizeof(g_shmem));
 			std::memset(g_range_lock_set, 0, sizeof(g_range_lock_set));
-			g_range_lock_bits = 0;
+			std::memset(g_range_lock_bits, 0, sizeof(g_range_lock_bits));
 
 #ifdef _WIN32
 			utils::memory_release(g_hook_addr, 0x800000000);
@@ -2104,7 +2215,7 @@ namespace vm
 #endif
 
 		std::memset(g_range_lock_set, 0, sizeof(g_range_lock_set));
-		g_range_lock_bits = 0;
+		std::memset(g_range_lock_bits, 0, sizeof(g_range_lock_bits));
 	}
 
 	void save(utils::serial& ar)
@@ -2152,9 +2263,8 @@ namespace vm
 			//  Save shared memory
 			ar(shm->flags());
 
-			// TODO: string_view serialization (even with load function, so the loaded address points to a position of the stream's buffer)
 			ar(shm->size());
-			save_memory_bytes(ar, vm::get_super_ptr<u8>(addr), shm->size());
+			serialize_memory_bytes(ar, vm::get_super_ptr<u8>(addr), shm->size());
 		}
 
 		// TODO: Serialize std::vector direcly
@@ -2177,19 +2287,27 @@ namespace vm
 	void load(utils::serial& ar)
 	{
 		std::vector<std::shared_ptr<utils::shm>> shared;
-		shared.resize(ar.operator usz());
+
+		const usz shared_size = ar.pop<usz>();
+
+		if (!shared_size || ar.get_size(umax) / 4096 < shared_size)
+		{
+			fmt::throw_exception("Invalid VM serialization state: shared_size=0x%x, ar=%s", shared_size, ar);
+		}
+
+		shared.resize(shared_size);
 
 		for (auto& shm : shared)
 		{
 			// Load shared memory
 
-			const u32 flags = ar;
-			const u64 size = ar;
+			const u32 flags = ar.pop<u32>();
+			const u64 size = ar.pop<u64>();
 			shm = std::make_shared<utils::shm>(size, flags);
 
 			// Load binary image
 			// elad335: I'm not proud about it as well.. (ideal situation is to not call map_self())
-			load_memory_bytes(ar, shm->map_self(), shm->size());
+			serialize_memory_bytes(ar, shm->map_self(), shm->size());
 		}
 
 		for (auto& block : g_locations)
@@ -2198,19 +2316,17 @@ namespace vm
 		}
 
 		g_locations.clear();
-		g_locations.resize(ar.operator usz());
+		g_locations.resize(ar.pop<usz>());
 
 		for (auto& loc : g_locations)
 		{
-			const u8 has = ar;
+			const u8 has = ar.pop<u8>();
 
 			if (has)
 			{
 				loc = std::make_shared<block_t>(ar, shared);
 			}
 		}
-
-		g_range_lock = 0;
 	}
 
 	u32 get_shm_addr(const std::shared_ptr<utils::shm>& shared)
@@ -2224,6 +2340,54 @@ namespace vm
 		}
 
 		return 0;
+	}
+
+	bool read_string(u32 addr, u32 max_size, std::string& out_string, bool check_pages) noexcept
+	{
+		if (!max_size)
+		{
+			return true;
+		}
+
+		// Prevent overflow
+		const u32 size = 0 - max_size < addr ? (0 - addr) : max_size;
+
+		for (u32 i = addr, end = utils::align(addr + size, 4096) - 1; i <= end;)
+		{
+			if (check_pages && !vm::check_addr(i, vm::page_readable))
+			{
+				// Invalid string termination
+				return false;
+			}
+
+			const char* s_start = vm::get_super_ptr<const char>(i);
+			const u32 space = std::min<u32>(end - i + 1, 4096 - (i % 4096));
+			const char* s_end = s_start + space;
+			const char* s_null = std::find(s_start, s_end, '\0');
+
+			// Append string
+			out_string.append(s_start, s_null);
+
+			// Recheck for zeroes after append
+			const usz old_size = out_string.size();
+			out_string.erase(std::find(out_string.end() - (s_null - s_start), out_string.end(), '\0'), out_string.end());
+
+			if (out_string.size() != old_size || s_null != s_end)
+			{
+				// Null terminated
+				return true;
+			}
+
+			i += space;
+
+			if (!i)
+			{
+				break;
+			}
+		}
+
+		// Non-null terminated but terminated by size limit (so the string may continue)
+		return size == max_size;
 	}
 }
 
@@ -2241,8 +2405,10 @@ void fmt_class_string<vm::_ptr_base<const char, u32>>::format(std::string& out, 
 		return;
 	}
 
-	// Filter certainly invalid addresses (TODO)
-	if (arg < 0x10000 || arg >= 0xf0000000)
+	const u32 addr = ::narrow<u32>(arg);
+
+	// Filter certainly invalid addresses
+	if (!vm::check_addr(addr, vm::page_readable))
 	{
 		out += reinterpret_cast<const char*>(u8"«INVALID_ADDRESS:");
 		fmt_class_string<u32>::format(out, arg);
@@ -2254,26 +2420,14 @@ void fmt_class_string<vm::_ptr_base<const char, u32>>::format(std::string& out, 
 
 	out += reinterpret_cast<const char*>(u8"“");
 
-	for (vm::_ptr_base<const volatile char, u32> ptr = vm::cast(arg);; ptr++)
+	if (!vm::read_string(addr, umax, out, true))
 	{
-		if (!vm::check_addr(ptr.addr()))
-		{
-			// TODO: optimize checks
-			out.resize(start);
-			out += reinterpret_cast<const char*>(u8"«INVALID_ADDRESS:");
-			fmt_class_string<u32>::format(out, arg);
-			out += reinterpret_cast<const char*>(u8"»");
-			return;
-		}
-
-		if (const char ch = *ptr)
-		{
-			out += ch;
-		}
-		else
-		{
-			break;
-		}
+		// Revert changes
+		out.resize(start);
+		out += reinterpret_cast<const char*>(u8"«INVALID_ADDRESS:");
+		fmt_class_string<u32>::format(out, arg);
+		out += reinterpret_cast<const char*>(u8"»");
+		return;
 	}
 
 	out += reinterpret_cast<const char*>(u8"”");

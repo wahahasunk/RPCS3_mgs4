@@ -441,7 +441,7 @@ bool cheat_engine::is_addr_safe(const u32 offset)
 	if (Emu.IsStopped())
 		return false;
 
-	const auto ppum = g_fxo->try_get<ppu_module>();
+	const auto ppum = g_fxo->try_get<main_ppu_module>();
 
 	if (!ppum)
 	{
@@ -852,7 +852,7 @@ cheat_manager_dialog::cheat_manager_dialog(QWidget* parent)
 		{
 			if (g_cheat.exist(name, offset))
 			{
-				if (QMessageBox::question(this, tr("Cheat already exist"), tr("Do you want to overwrite the existing cheat?"), QMessageBox::Ok | QMessageBox::Cancel) != QMessageBox::Ok)
+				if (QMessageBox::question(this, tr("Cheat already exists"), tr("Do you want to overwrite the existing cheat?"), QMessageBox::Ok | QMessageBox::Cancel) != QMessageBox::Ok)
 					return;
 			}
 

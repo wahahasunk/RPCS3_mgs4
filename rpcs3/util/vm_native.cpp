@@ -52,7 +52,7 @@ namespace utils
 #ifdef MAP_NORESERVE
 	constexpr int c_map_noreserve = MAP_NORESERVE;
 #else
-	constexpr int c_map_noreserve = 0;
+	[[maybe_unused]] constexpr int c_map_noreserve = 0;
 #endif
 
 #ifdef MADV_FREE
@@ -66,7 +66,7 @@ namespace utils
 #ifdef MADV_HUGEPAGE
 	constexpr int c_madv_hugepage = MADV_HUGEPAGE;
 #else
-	constexpr int c_madv_hugepage = 0;
+	[[maybe_unused]] constexpr int c_madv_hugepage = 0;
 #endif
 
 #if defined(MADV_DONTDUMP) && defined(MADV_DODUMP)
@@ -76,13 +76,13 @@ namespace utils
 	constexpr int c_madv_no_dump = MADV_NOCORE;
 	constexpr int c_madv_dump = MADV_CORE;
 #else
-	constexpr int c_madv_no_dump = 0;
-	constexpr int c_madv_dump = 0;
+	[[maybe_unused]] constexpr int c_madv_no_dump = 0;
+	[[maybe_unused]] constexpr int c_madv_dump = 0;
 #endif
 
 #if defined(MFD_HUGETLB) && defined(MFD_HUGE_2MB)
 	constexpr int c_mfd_huge_2mb = MFD_HUGETLB | MFD_HUGE_2MB;
-#else
+#elif defined(__linux__) || defined(__FreeBSD__)
 	constexpr int c_mfd_huge_2mb = 0;
 #endif
 
@@ -91,7 +91,7 @@ namespace utils
 	DYNAMIC_IMPORT("KernelBase.dll", MapViewOfFile3, PVOID(HANDLE Handle, HANDLE Process, PVOID Base, ULONG64 Off, SIZE_T ViewSize, ULONG AllocType, ULONG Prot, MEM_EXTENDED_PARAMETER*, ULONG));
 	DYNAMIC_IMPORT("KernelBase.dll", UnmapViewOfFile2, BOOL(HANDLE Process, PVOID BaseAddress, ULONG UnmapFlags));
 
-	const bool has_win10_memory_mapping_api()
+	bool has_win10_memory_mapping_api()
 	{
 		return VirtualAlloc2 && MapViewOfFile3 && UnmapViewOfFile2;
 	}
@@ -442,7 +442,7 @@ namespace utils
 #endif
 	}
 
-	void* memory_map_fd(native_handle fd, usz size, protection prot)
+	void* memory_map_fd([[maybe_unused]] native_handle fd, [[maybe_unused]] usz size, [[maybe_unused]] protection prot)
 	{
 #ifdef _WIN32
 		// TODO
@@ -464,7 +464,8 @@ namespace utils
 		, m_size(utils::align(size, 0x10000))
 	{
 #ifdef _WIN32
-		m_handle = ensure(::CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE, 0, m_size, nullptr));
+		const ULARGE_INTEGER max_size{ .QuadPart = m_size };
+		m_handle = ensure(::CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_EXECUTE_READWRITE, max_size.HighPart, max_size.LowPart, nullptr));
 #elif defined(__linux__) || defined(__FreeBSD__)
 		m_file = -1;
 
@@ -508,62 +509,29 @@ namespace utils
 #ifdef _WIN32
 		fs::file f;
 
-		std::function<bool(const std::string&, HANDLE, usz)> set_sparse = [&](const std::string& storagex, HANDLE h, usz m_size) -> bool
+		auto open_with_cleanup = [](fs::file& f, const std::string& path)
 		{
-			FILE_SET_SPARSE_BUFFER arg{.SetSparse = true};
-			FILE_BASIC_INFO info0{};
-			ensure(GetFileInformationByHandleEx(h, FileBasicInfo, &info0, sizeof(info0)));
+			f.close();
 
-			if ((info0.FileAttributes & FILE_ATTRIBUTE_ARCHIVE) || (~info0.FileAttributes & FILE_ATTRIBUTE_TEMPORARY))
+			for (u32 try_count = 3, i = 0; !f && i < try_count; i++)
 			{
-				info0.FileAttributes &= ~FILE_ATTRIBUTE_ARCHIVE;
-				info0.FileAttributes |= FILE_ATTRIBUTE_TEMPORARY;
-				ensure(SetFileInformationByHandle(h, FileBasicInfo, &info0, sizeof(info0)));
+				// Bug workaround: removing old file may be safer than rewriting it
+				if (!fs::remove_file(path) && fs::g_tls_error != fs::error::noent)
+				{
+					return false;
+				}
+
+				if (!f.open(path, fs::read + fs::write + fs::create + fs::excl) && fs::g_tls_error != fs::error::exist)
+				{
+					return false;
+				}
 			}
 
-			if (DWORD bytesReturned{}; (info0.FileAttributes & FILE_ATTRIBUTE_SPARSE_FILE) || DeviceIoControl(h, FSCTL_SET_SPARSE, &arg, sizeof(arg), nullptr, 0, &bytesReturned, nullptr))
-			{
-				if ((info0.FileAttributes & FILE_ATTRIBUTE_SPARSE_FILE) == 0 && !storagex.empty())
-				{
-					// Retry once (bug workaround)
-					f.close();
-					f.open(storagex, fs::read + fs::write + fs::create);
-					return set_sparse("", f.get_handle(), m_size);
-				}
-
-				FILE_STANDARD_INFO info;
-				FILE_END_OF_FILE_INFO _eof{};
-				ensure(GetFileInformationByHandleEx(h, FileStandardInfo, &info, sizeof(info)));
-				ensure(GetFileSizeEx(h, &_eof.EndOfFile));
-
-				if (info.AllocationSize.QuadPart && _eof.EndOfFile.QuadPart == m_size)
-				{
-					// Truncate file since it may be dirty (fool-proof)
-					DWORD ret = 0;
-					FILE_ALLOCATED_RANGE_BUFFER dummy{};
-					dummy.Length.QuadPart = m_size;
-
-					if (!DeviceIoControl(h, FSCTL_QUERY_ALLOCATED_RANGES, &dummy, sizeof(dummy), nullptr, 0, &ret, 0) || ret)
-					{
-						_eof.EndOfFile.QuadPart = 0;
-					}
-				}
-
-				if (_eof.EndOfFile.QuadPart != m_size)
-				{
-					// Reset file size to 0 if it doesn't match
-					_eof.EndOfFile.QuadPart = 0;
-					ensure(SetFileInformationByHandle(h, FileEndOfFileInfo, &_eof, sizeof(_eof)));
-				}
-
-				return true;
-			}
-
-			return false;
+			return f.operator bool();
 		};
 
-		std::string storage1 = fs::get_cache_dir();
-		std::string storage2 = fs::get_temp_dir();
+		std::string storage1 = fs::get_temp_dir();
+		std::string storage2 = fs::get_cache_dir();
 
 		if (storage.empty())
 		{
@@ -576,12 +544,112 @@ namespace utils
 			storage2 += storage;
 		}
 
-		if (!f.open(storage1, fs::read + fs::write + fs::create) || !set_sparse(storage1, f.get_handle(), m_size))
+		std::function<bool(const std::string&, HANDLE, usz)> set_sparse_and_map = [&](const std::string& storagex, HANDLE h, usz m_size) -> bool
 		{
-			// Fallback storage
-			ensure(f.open(storage2, fs::read + fs::write + fs::create));
+			// In case failed, revert changes and forward failure
+			auto clean = [&](bool result)
+			{
+				if (!result)
+				{
+					const fs::error last_fs_error = fs::g_tls_error;
+					const DWORD last_win_error = ::GetLastError();
 
-			if (!set_sparse(storage2, f.get_handle(), m_size))
+					fs::remove_file(storagex);
+
+					fs::g_tls_error = last_fs_error;
+					::SetLastError(last_win_error);
+				}
+
+				return result;
+			};
+
+			FILE_SET_SPARSE_BUFFER arg{.SetSparse = true};
+			FILE_BASIC_INFO info0{};
+			ensure(clean(GetFileInformationByHandleEx(h, FileBasicInfo, &info0, sizeof(info0))));
+
+			if ((info0.FileAttributes & FILE_ATTRIBUTE_ARCHIVE) || (~info0.FileAttributes & FILE_ATTRIBUTE_TEMPORARY))
+			{
+				info0.FileAttributes &= ~FILE_ATTRIBUTE_ARCHIVE;
+				info0.FileAttributes |= FILE_ATTRIBUTE_TEMPORARY;
+				ensure(clean(SetFileInformationByHandle(h, FileBasicInfo, &info0, sizeof(info0))));
+			}
+
+			if (DWORD bytesReturned{}; (info0.FileAttributes & FILE_ATTRIBUTE_SPARSE_FILE) || DeviceIoControl(h, FSCTL_SET_SPARSE, &arg, sizeof(arg), nullptr, 0, &bytesReturned, nullptr))
+			{
+				if ((info0.FileAttributes & FILE_ATTRIBUTE_SPARSE_FILE) == 0 && !storagex.empty())
+				{
+					// Retry once (bug workaround)
+					if (!open_with_cleanup(f, storagex))
+					{
+						return false;
+					}
+
+					return set_sparse_and_map("", f.get_handle(), m_size);
+				}
+
+				FILE_STANDARD_INFO info;
+				FILE_END_OF_FILE_INFO _eof{};
+				ensure(clean(GetFileInformationByHandleEx(h, FileStandardInfo, &info, sizeof(info))));
+				ensure(clean(GetFileSizeEx(h, &_eof.EndOfFile)));
+
+				if (info.AllocationSize.QuadPart && _eof.EndOfFile.QuadPart == static_cast<LONGLONG>(m_size))
+				{
+					// Truncate file since it may be dirty (fool-proof)
+					DWORD ret = 0;
+					FILE_ALLOCATED_RANGE_BUFFER dummy{};
+					dummy.Length.QuadPart = m_size;
+
+					if (!DeviceIoControl(h, FSCTL_QUERY_ALLOCATED_RANGES, &dummy, sizeof(dummy), nullptr, 0, &ret, 0) || ret)
+					{
+						_eof.EndOfFile.QuadPart = 0;
+					}
+				}
+
+				if (_eof.EndOfFile.QuadPart != static_cast<LONGLONG>(m_size))
+				{
+					// Reset file size to 0 if it doesn't match
+					_eof.EndOfFile.QuadPart = 0;
+					ensure(clean(SetFileInformationByHandle(h, FileEndOfFileInfo, &_eof, sizeof(_eof))));
+				}
+
+				// It seems impossible to automatically delete file on exit when file mapping is used
+				if (f.size() != m_size)
+				{
+					// Resize the file gradually (bug workaround)
+					for (usz i = 0; i < m_size / (1024 * 1024 * 256); i++)
+					{
+						ensure(clean(f.trunc((i + 1) * (1024 * 1024 * 256))));
+					}
+
+					ensure(clean(f.trunc(m_size)));
+				}
+
+				m_handle = ::CreateFileMappingW(f.get_handle(), nullptr, PAGE_READWRITE, 0, 0, nullptr);
+				if (clean(!m_handle))
+				{
+					ensure(storagex == storage1);
+					return false;
+				}
+
+				return true;
+			}
+
+			return false;
+		};
+
+		// Attempt to remove from secondary storage in case this succeeds
+		fs::remove_file(storage2);
+
+		if (!open_with_cleanup(f, storage1) || !set_sparse_and_map(storage1, f.get_handle(), m_size))
+		{
+			// Attempt to remove from main storage in case this succeeds
+			f.close();
+			fs::remove_file(storage1);
+
+			// Fallback storage
+			ensure(open_with_cleanup(f, storage2));
+
+			if (!set_sparse_and_map(storage2, f.get_handle(), m_size))
 			{
 				MessageBoxW(0, L"Failed to initialize sparse file.\nCan't find a filesystem with sparse file support (NTFS).", L"RPCS3", MB_ICONERROR);
 			}
@@ -592,20 +660,6 @@ namespace utils
 		{
 			m_storage = std::move(storage1);
 		}
-
-		// It seems impossible to automatically delete file on exit when file mapping is used
-		if (f.size() != m_size)
-		{
-			// Resize the file gradually (bug workaround)
-			for (usz i = 0; i < m_size / (1024 * 1024 * 256); i++)
-			{
-				ensure(f.trunc((i + 1) * (1024 * 1024 * 256)));
-			}
-
-			ensure(f.trunc(m_size));
-		}
-
-		m_handle = ensure(::CreateFileMappingW(f.get_handle(), nullptr, PAGE_READWRITE, 0, 0, nullptr));
 #else
 
 #ifdef __linux__
@@ -622,12 +676,12 @@ namespace utils
 		}
 #else
 		int vm_overcommit = 0;
-		auto vm_sz = sizeof(int);
 
 #if defined(__NetBSD__) || defined(__APPLE__)
 		// Always ON
 		vm_overcommit = 0;
 #elif defined(__FreeBSD__)
+		auto vm_sz = sizeof(int);
 		int mib[2]{CTL_VM, VM_OVERCOMMIT};
 		if (::sysctl(mib, 2, &vm_overcommit, &vm_sz, NULL, 0) != 0)
 			vm_overcommit = -1;
@@ -817,7 +871,7 @@ namespace utils
 			return {nullptr, fmt::format("VirtualQuery() Unexpceted memory info: state=0x%x, %s", mem.State, std::as_bytes(std::span(&mem, 1)))};
 		}
 
-		const auto base = (u8*)mem.AllocationBase;
+		const auto base = static_cast<u8*>(mem.AllocationBase);
 		const auto size = mem.RegionSize + (target - base);
 
 		if (is_memory_mappping_memory(ptr))
@@ -928,7 +982,7 @@ namespace utils
 			::MEMORY_BASIC_INFORMATION mem{}, mem2{};
 			ensure(::VirtualQuery(target - 1, &mem, sizeof(mem)) && ::VirtualQuery(target + m_size, &mem2, sizeof(mem2)));
 
-			const auto size1 = mem.State == MEM_RESERVE ? target - (u8*)mem.AllocationBase : 0;
+			const auto size1 = mem.State == MEM_RESERVE ? target - static_cast<u8*>(mem.AllocationBase) : 0;
 			const auto size2 =  mem2.State == MEM_RESERVE ? mem2.RegionSize : 0;
 
 			if (!size1 && !size2)
@@ -958,7 +1012,7 @@ namespace utils
 			return;
 		}
 
-		const auto size1 = mem.State == MEM_RESERVE ? target - (u8*)mem.AllocationBase : 0;
+		const auto size1 = mem.State == MEM_RESERVE ? target - static_cast<u8*>(mem.AllocationBase) : 0;
 		const auto size2 = mem2.State == MEM_RESERVE ? mem2.RegionSize : 0;
 
 		if (!::VirtualAlloc(mem.State == MEM_RESERVE ? mem.AllocationBase : target, m_size + size1 + size2, MEM_RESERVE, PAGE_NOACCESS))

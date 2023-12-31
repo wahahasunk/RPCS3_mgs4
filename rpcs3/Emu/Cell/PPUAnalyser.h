@@ -3,8 +3,11 @@
 #include <string>
 #include <map>
 #include <set>
+#include <deque>
 #include "util/types.hpp"
 #include "util/endian.hpp"
+#include "util/asm.hpp"
+#include "util/to_endian.hpp"
 
 #include "Utilities/bit_set.h"
 #include "PPUOpcodes.h"
@@ -65,20 +68,21 @@ struct ppu_segment
 	u32 type;
 	u32 flags;
 	u32 filesz;
+	void* ptr{};
 };
 
 // PPU Module Information
 struct ppu_module
 {
-	ppu_module() = default;
+	ppu_module() noexcept = default;
 
 	ppu_module(const ppu_module&) = delete;
 
-	ppu_module(ppu_module&&) = default;
+	ppu_module(ppu_module&&) noexcept = default;
 
 	ppu_module& operator=(const ppu_module&) = delete;
 
-	ppu_module& operator=(ppu_module&&) = default;
+	ppu_module& operator=(ppu_module&&) noexcept = default;
 
 	uchar sha1[20]{};
 	std::string name{};
@@ -89,6 +93,8 @@ struct ppu_module
 	std::vector<ppu_segment> segs{};
 	std::vector<ppu_segment> secs{};
 	std::vector<ppu_function> funcs{};
+	std::deque<std::shared_ptr<void>> allocations;
+	std::map<u32, u32> addr_to_seg_index;
 
 	// Copy info without functions
 	void copy_part(const ppu_module& info)
@@ -99,10 +105,91 @@ struct ppu_module
 		relocs = info.relocs;
 		segs = info.segs;
 		secs = info.secs;
+		allocations = info.allocations;
+		addr_to_seg_index = info.addr_to_seg_index;
 	}
 
-	void analyse(u32 lib_toc, u32 entry, u32 end, const std::basic_string<u32>& applied);
+	bool analyse(u32 lib_toc, u32 entry, u32 end, const std::basic_string<u32>& applied, std::function<bool()> check_aborted = {});
 	void validate(u32 reloc);
+
+	template <typename T>
+	to_be_t<T>* get_ptr(u32 addr, u32 size_bytes) const
+	{
+		auto it = addr_to_seg_index.upper_bound(addr);
+
+		if (it == addr_to_seg_index.begin())
+		{
+			return nullptr;
+		}
+
+		it--;
+
+		const auto& seg = segs[it->second];
+		const u32 seg_size = seg.size;
+		const u32 seg_addr = seg.addr;
+
+		if (seg_size >= std::max<usz>(size_bytes, 1) && addr <= utils::align<u32>(seg_addr + seg_size, 0x10000) - size_bytes)
+		{
+			return reinterpret_cast<to_be_t<T>*>(static_cast<u8*>(seg.ptr) + (addr - seg_addr));
+		}
+
+		return nullptr;
+	}
+
+	template <typename T>
+	to_be_t<T>* get_ptr(u32 addr) const
+	{
+		constexpr usz size_element = std::is_void_v<T> ? 0 : sizeof(std::conditional_t<std::is_void_v<T>, char, T>);
+		return get_ptr<T>(addr, u32{size_element});
+	}
+
+	template <typename T, typename U> requires requires (const U& obj) { obj.get_ptr(); }
+	to_be_t<T>* get_ptr(U&& addr) const
+	{
+		constexpr usz size_element = std::is_void_v<T> ? 0 : sizeof(std::conditional_t<std::is_void_v<T>, char, T>);
+		return get_ptr<T>(addr.addr(), u32{size_element});
+	}
+
+	template <typename T>
+	to_be_t<T>& get_ref(u32 addr,
+		u32 line = __builtin_LINE(),
+		u32 col = __builtin_COLUMN(),
+		const char* file = __builtin_FILE(),
+		const char* func = __builtin_FUNCTION()) const
+	{
+		constexpr usz size_element = std::is_void_v<T> ? 0 : sizeof(std::conditional_t<std::is_void_v<T>, char, T>);
+		if (auto ptr = get_ptr<T>(addr, u32{size_element}))
+		{
+			return *ptr;
+		}
+
+		fmt::throw_exception("get_ref(): Failure! (addr=0x%x)%s", addr, src_loc{line, col, file, func});
+		return *std::add_pointer_t<to_be_t<T>>{};
+	}
+
+	template <typename T, typename U> requires requires (const U& obj) { obj.get_ptr(); }
+	to_be_t<T>& get_ref(U&& addr, u32 index = 0,
+		u32 line = __builtin_LINE(),
+		u32 col = __builtin_COLUMN(),
+		const char* file = __builtin_FILE(),
+		const char* func = __builtin_FUNCTION()) const
+	{
+		constexpr usz size_element = std::is_void_v<T> ? 0 : sizeof(std::conditional_t<std::is_void_v<T>, char, T>);
+		if (auto ptr = get_ptr<T>((addr + index).addr(), u32{size_element}))
+		{
+			return *ptr;
+		}
+
+		fmt::throw_exception("get_ref(): Failure! (addr=0x%x)%s", (addr + index).addr(), src_loc{line, col, file, func});
+		return *std::add_pointer_t<to_be_t<T>>{};
+	}
+};
+
+struct main_ppu_module : public ppu_module
+{
+	u32 elf_entry{};
+	u32 seg0_code_end{};
+	std::basic_string<u32> applied_patches;
 };
 
 // Aux
@@ -175,7 +262,10 @@ struct ppu_pattern_matrix
 // PPU Instruction Type
 struct ppu_itype
 {
-	enum type
+	static constexpr struct branch_tag{} branch{}; // Branch Instructions
+	static constexpr struct trap_tag{} trap{}; // Branch Instructions
+
+	enum class type
 	{
 		UNK = 0,
 
@@ -336,8 +426,6 @@ struct ppu_itype
 		VUPKLSB,
 		VUPKLSH,
 		VXOR,
-		TDI,
-		TWI,
 		MULLI,
 		SUBFIC,
 		CMPLI,
@@ -345,11 +433,8 @@ struct ppu_itype
 		ADDIC,
 		ADDI,
 		ADDIS,
-		BC,
 		SC,
-		B,
 		MCRF,
-		BCLR,
 		CRNOR,
 		CRANDC,
 		ISYNC,
@@ -359,7 +444,6 @@ struct ppu_itype
 		CREQV,
 		CRORC,
 		CROR,
-		BCCTR,
 		RLWIMI,
 		RLWINM,
 		RLWNM,
@@ -376,7 +460,6 @@ struct ppu_itype
 		RLDCL,
 		RLDCR,
 		CMP,
-		TW,
 		LVSL,
 		LVEBX,
 		SUBFC,
@@ -403,7 +486,6 @@ struct ppu_itype
 		LWZUX,
 		CNTLZD,
 		ANDC,
-		TD,
 		LVEWX,
 		MULHD,
 		MULHW,
@@ -694,12 +776,34 @@ struct ppu_itype
 		FCTID_,
 		FCTIDZ_,
 		FCFID_,
+
+		B, // branch_tag first
+		BC,
+		BCLR,
+		BCCTR, // branch_tag last
+
+		TD, // trap_tag first
+		TW,
+		TDI,
+		TWI, // trap_tag last
 	};
+
+	using enum type;
 
 	// Enable address-of operator for ppu_decoder<>
 	friend constexpr type operator &(type value)
 	{
 		return value;
+	}
+
+	friend constexpr bool operator &(type value, branch_tag)
+	{
+		return value >= B && value <= BCCTR;
+	}
+
+	friend constexpr bool operator &(type value, trap_tag)
+	{
+		return value >= TD && value <= TWI;
 	}
 };
 

@@ -5,7 +5,6 @@
 #include "util/types.hpp"
 #include "util/atomic.hpp"
 #include "util/media_utils.h"
-#include "util/video_provider.h"
 #include "Emu/RSX/GSFrameBase.h"
 
 #include <QWindow>
@@ -69,11 +68,11 @@ public:
 	bool get_mouse_lock_state();
 
 	bool can_consume_frame() const override;
-	void present_frame(std::vector<u8>& data, const u32 width, const u32 height, bool is_bgra) const override;
-	void take_screenshot(std::vector<u8> data, const u32 sshot_width, const u32 sshot_height, bool is_bgra) override;
+	void present_frame(std::vector<u8>& data, u32 pitch, u32 width, u32 height, bool is_bgra) const override;
+	void take_screenshot(std::vector<u8> data, u32 sshot_width, u32 sshot_height, bool is_bgra) override;
 
 protected:
-	virtual void paintEvent(QPaintEvent *event);
+	void paintEvent(QPaintEvent *event) override;
 	void showEvent(QShowEvent *event) override;
 
 	void keyPressEvent(QKeyEvent *keyEvent) override;
@@ -90,7 +89,6 @@ protected:
 	void flip(draw_context_t context, bool skip_frame = false) override;
 	int client_width() override;
 	int client_height() override;
-	double client_device_pixel_ratio() const override;
 
 	bool event(QEvent* ev) override;
 

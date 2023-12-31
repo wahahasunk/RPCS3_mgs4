@@ -5,9 +5,9 @@
 #include "Emu/VFS.h"
 #include "Emu/System.h"
 #include "Emu/system_utils.hpp"
+#include "Crypto/unzip.h"
 
 #include <algorithm>
-#include <zlib.h>
 
 inline u8 Read8(const fs::file& f)
 {
@@ -192,60 +192,58 @@ void WriteShdr(const fs::file& f, Elf32_Shdr& shdr)
 }
 
 
-void AppInfo::Load(const fs::file& f)
+void program_identification_header::Load(const fs::file& f)
 {
-	authid    = Read64(f);
-	vendor_id = Read32(f);
-	self_type = Read32(f);
-	version   = Read64(f);
-	padding   = Read64(f);
+	program_authority_id = Read64(f);
+	program_vendor_id    = Read32(f);
+	program_type         = Read32(f);
+	program_sceversion   = Read64(f);
+	padding              = Read64(f);
 }
 
-void AppInfo::Show() const
+void program_identification_header::Show() const
 {
-	self_log.notice("AuthID: 0x%llx", authid);
-	self_log.notice("VendorID: 0x%08x", vendor_id);
-	self_log.notice("SELF type: 0x%08x", self_type);
-	self_log.notice("Version: 0x%llx", version);
+	self_log.notice("AuthID: 0x%llx", program_authority_id);
+	self_log.notice("VendorID: 0x%08x", program_vendor_id);
+	self_log.notice("SELF type: 0x%08x", program_type);
+	self_log.notice("Version: 0x%llx", program_sceversion);
 }
 
-void SectionInfo::Load(const fs::file& f)
+void segment_ext_header::Load(const fs::file& f)
 {
-	offset     = Read64(f);
-	size       = Read64(f);
-	compressed = Read32(f);
-	unknown1   = Read32(f);
-	unknown2   = Read32(f);
-	encrypted  = Read32(f);
+	offset      = Read64(f);
+	size        = Read64(f);
+	compression = Read32(f);
+	unknown     = Read32(f);
+	encryption  = Read64(f);
 }
 
-void SectionInfo::Show() const
+void segment_ext_header::Show() const
 {
 	self_log.notice("Offset: 0x%llx", offset);
 	self_log.notice("Size: 0x%llx", size);
-	self_log.notice("Compressed: 0x%08x", compressed);
-	self_log.notice("Unknown1: 0x%08x", unknown1);
-	self_log.notice("Unknown2: 0x%08x", unknown2);
-	self_log.notice("Encrypted: 0x%08x", encrypted);
+	self_log.notice("Compression: 0x%08x", compression);
+	self_log.notice("Unknown: 0x%08x", unknown);
+	self_log.notice("Encryption: 0x%08x", encryption);
 }
 
-void SCEVersionInfo::Load(const fs::file& f)
+void version_header::Load(const fs::file& f)
 {
 	subheader_type = Read32(f);
 	present        = Read32(f);
 	size           = Read32(f);
-	unknown        = Read32(f);
+	unknown4       = Read32(f);
 }
 
-void SCEVersionInfo::Show() const
+void version_header::Show() const
 {
 	self_log.notice("Sub-header type: 0x%08x", subheader_type);
 	self_log.notice("Present: 0x%08x", present);
 	self_log.notice("Size: 0x%08x", size);
-	self_log.notice("Unknown: 0x%08x", unknown);
+	self_log.notice("Unknown: 0x%08x", unknown4);
 }
 
-void ControlInfo::Load(const fs::file& f)
+void supplemental_header::Load(const fs::file& f)
 {
 	type = Read32(f);
 	size = Read32(f);
@@ -253,45 +251,45 @@ void ControlInfo::Load(const fs::file& f)
 
 	if (type == 1)
 	{
-		control_flags.ctrl_flag1 = Read32(f);
-		control_flags.unknown1 = Read32(f);
-		control_flags.unknown2 = Read32(f);
-		control_flags.unknown3 = Read32(f);
-		control_flags.unknown4 = Read32(f);
-		control_flags.unknown5 = Read32(f);
-		control_flags.unknown6 = Read32(f);
-		control_flags.unknown7 = Read32(f);
+		PS3_plaintext_capability_header.ctrl_flag1 = Read32(f);
+		PS3_plaintext_capability_header.unknown1 = Read32(f);
+		PS3_plaintext_capability_header.unknown2 = Read32(f);
+		PS3_plaintext_capability_header.unknown3 = Read32(f);
+		PS3_plaintext_capability_header.unknown4 = Read32(f);
+		PS3_plaintext_capability_header.unknown5 = Read32(f);
+		PS3_plaintext_capability_header.unknown6 = Read32(f);
+		PS3_plaintext_capability_header.unknown7 = Read32(f);
 	}
 	else if (type == 2)
 	{
 		if (size == 0x30)
 		{
-			f.read(file_digest_30.digest, 20);
-			file_digest_30.unknown = Read64(f);
+			f.read(PS3_elf_digest_header_30.constant_or_elf_digest, sizeof(PS3_elf_digest_header_30.constant_or_elf_digest));
+			f.read(PS3_elf_digest_header_30.padding, sizeof(PS3_elf_digest_header_30.padding));
 		}
 		else if (size == 0x40)
 		{
-			f.read(file_digest_40.digest1, 20);
-			f.read(file_digest_40.digest2, 20);
-			file_digest_40.unknown = Read64(f);
+			f.read(PS3_elf_digest_header_40.constant, sizeof(PS3_elf_digest_header_40.constant));
+			f.read(PS3_elf_digest_header_40.elf_digest, sizeof(PS3_elf_digest_header_40.elf_digest));
+			PS3_elf_digest_header_40.required_system_version = Read64(f);
 		}
 	}
 	else if (type == 3)
 	{
-		npdrm.magic = Read32(f);
-		npdrm.version = Read32(f);
-		npdrm.license = Read32(f);
-		npdrm.type = Read32(f);
-		f.read(npdrm.content_id, 48);
-		f.read(npdrm.digest, 16);
-		f.read(npdrm.title_hash, 16);
-		f.read(npdrm.dev_hash, 16);
-		npdrm.activate_time = Read64(f);
-		npdrm.expire_time = Read64(f);
+		PS3_npdrm_header.npd.magic = Read32(f);
+		PS3_npdrm_header.npd.version = Read32(f);
+		PS3_npdrm_header.npd.license = Read32(f);
+		PS3_npdrm_header.npd.type = Read32(f);
+		f.read(PS3_npdrm_header.npd.content_id, 48);
+		f.read(PS3_npdrm_header.npd.digest, 16);
+		f.read(PS3_npdrm_header.npd.title_hash, 16);
+		f.read(PS3_npdrm_header.npd.dev_hash, 16);
+		PS3_npdrm_header.npd.activate_time = Read64(f);
+		PS3_npdrm_header.npd.expire_time = Read64(f);
 	}
 }
 
-void ControlInfo::Show() const
+void supplemental_header::Show() const
 {
 	self_log.notice("Type: 0x%08x", type);
 	self_log.notice("Size: 0x%08x", size);
@@ -299,41 +297,41 @@ void ControlInfo::Show() const
 
 	if (type == 1)
 	{
-		self_log.notice("Control flag 1: 0x%08x", control_flags.ctrl_flag1);
-		self_log.notice("Unknown1: 0x%08x", control_flags.unknown1);
-		self_log.notice("Unknown2: 0x%08x", control_flags.unknown2);
-		self_log.notice("Unknown3: 0x%08x", control_flags.unknown3);
-		self_log.notice("Unknown4: 0x%08x", control_flags.unknown4);
-		self_log.notice("Unknown5: 0x%08x", control_flags.unknown5);
-		self_log.notice("Unknown6: 0x%08x", control_flags.unknown6);
-		self_log.notice("Unknown7: 0x%08x", control_flags.unknown7);
+		self_log.notice("Control flag 1: 0x%08x", PS3_plaintext_capability_header.ctrl_flag1);
+		self_log.notice("Unknown1: 0x%08x", PS3_plaintext_capability_header.unknown1);
+		self_log.notice("Unknown2: 0x%08x", PS3_plaintext_capability_header.unknown2);
+		self_log.notice("Unknown3: 0x%08x", PS3_plaintext_capability_header.unknown3);
+		self_log.notice("Unknown4: 0x%08x", PS3_plaintext_capability_header.unknown4);
+		self_log.notice("Unknown5: 0x%08x", PS3_plaintext_capability_header.unknown5);
+		self_log.notice("Unknown6: 0x%08x", PS3_plaintext_capability_header.unknown6);
+		self_log.notice("Unknown7: 0x%08x", PS3_plaintext_capability_header.unknown7);
 	}
 	else if (type == 2)
 	{
 		if (size == 0x30)
 		{
-			self_log.notice("Digest: %s", file_digest_30.digest);
-			self_log.notice("Unknown: 0x%llx", file_digest_30.unknown);
+			self_log.notice("Digest: %s", PS3_elf_digest_header_30.constant_or_elf_digest);
+			self_log.notice("Unknown: 0x%llx", PS3_elf_digest_header_30.padding);
 		}
 		else if (size == 0x40)
 		{
-			self_log.notice("Digest1: %s", file_digest_40.digest1);
-			self_log.notice("Digest2: %s", file_digest_40.digest2);
-			self_log.notice("Unknown: 0x%llx", file_digest_40.unknown);
+			self_log.notice("Digest1: %s", PS3_elf_digest_header_40.constant);
+			self_log.notice("Digest2: %s", PS3_elf_digest_header_40.elf_digest);
+			self_log.notice("Unknown: 0x%llx", PS3_elf_digest_header_40.required_system_version);
 		}
 	}
 	else if (type == 3)
 	{
-		self_log.notice("Magic: 0x%08x", npdrm.magic);
-		self_log.notice("Version: 0x%08x", npdrm.version);
-		self_log.notice("License: 0x%08x", npdrm.license);
-		self_log.notice("Type: 0x%08x", npdrm.type);
-		self_log.notice("ContentID: %s", npdrm.content_id);
-		self_log.notice("Digest: %s", npdrm.digest);
-		self_log.notice("Inverse digest: %s", npdrm.title_hash);
-		self_log.notice("XOR digest: %s", npdrm.dev_hash);
-		self_log.notice("Activation time: 0x%llx", npdrm.activate_time);
-		self_log.notice("Expiration time: 0x%llx", npdrm.expire_time);
+		self_log.notice("Magic: 0x%08x", PS3_npdrm_header.npd.magic);
+		self_log.notice("Version: 0x%08x", PS3_npdrm_header.npd.version);
+		self_log.notice("License: 0x%08x", PS3_npdrm_header.npd.license);
+		self_log.notice("Type: 0x%08x", PS3_npdrm_header.npd.type);
+		self_log.notice("ContentID: %s", PS3_npdrm_header.npd.content_id);
+		self_log.notice("Digest: %s", PS3_npdrm_header.npd.digest);
+		self_log.notice("Inverse digest: %s", PS3_npdrm_header.npd.title_hash);
+		self_log.notice("XOR digest: %s", PS3_npdrm_header.npd.dev_hash);
+		self_log.notice("Activation time: 0x%llx", PS3_npdrm_header.npd.activate_time);
+		self_log.notice("Expiration time: 0x%llx", PS3_npdrm_header.npd.expire_time);
 	}
 }
 
@@ -353,10 +351,10 @@ void MetadataInfo::Show() const
 	std::string iv_pad_str;
 	for (int i = 0; i < 0x10; i++)
 	{
-		key_str += fmt::format("%02x", key[i]);
-		key_pad_str += fmt::format("%02x", key_pad[i]);
-		iv_str += fmt::format("%02x", iv[i]);
-		iv_pad_str += fmt::format("%02x", iv_pad[i]);
+		fmt::append(key_str, "%02x", key[i]);
+		fmt::append(key_pad_str, "%02x", key_pad[i]);
+		fmt::append(iv_str, "%02x", iv[i]);
+		fmt::append(iv_pad_str, "%02x", iv_pad[i]);
 	}
 
 	self_log.notice("Key: %s", key_str.c_str());
@@ -367,22 +365,14 @@ void MetadataInfo::Show() const
 
 void MetadataHeader::Load(u8* in)
 {
-	memcpy(&signature_input_length, in, 8);
-	memcpy(&unknown1, in + 8, 4);
-	memcpy(&section_count, in + 12, 4);
-	memcpy(&key_count, in + 16, 4);
-	memcpy(&opt_header_size, in + 20, 4);
-	memcpy(&unknown2, in + 24, 4);
-	memcpy(&unknown3, in + 28, 4);
-
 	// Endian swap.
-	signature_input_length = swap64(signature_input_length);
-	unknown1 = swap32(unknown1);
-	section_count = swap32(section_count);
-	key_count = swap32(key_count);
-	opt_header_size = swap32(opt_header_size);
-	unknown2 = swap32(unknown2);
-	unknown3 = swap32(unknown3);
+	signature_input_length = read_from_ptr<be_t<u64>>(in);
+	unknown1               = read_from_ptr<be_t<u32>>(in, 8);
+	section_count          = read_from_ptr<be_t<u32>>(in, 12);
+	key_count              = read_from_ptr<be_t<u32>>(in, 16);
+	opt_header_size        = read_from_ptr<be_t<u32>>(in, 20);
+	unknown2               = read_from_ptr<be_t<u32>>(in, 24);
+	unknown3               = read_from_ptr<be_t<u32>>(in, 28);
 }
 
 void MetadataHeader::Show() const
@@ -398,28 +388,17 @@ void MetadataHeader::Show() const
 
 void MetadataSectionHeader::Load(u8* in)
 {
-	memcpy(&data_offset, in, 8);
-	memcpy(&data_size, in + 8, 8);
-	memcpy(&type, in + 16, 4);
-	memcpy(&program_idx, in + 20, 4);
-	memcpy(&hashed, in + 24, 4);
-	memcpy(&sha1_idx, in + 28, 4);
-	memcpy(&encrypted, in + 32, 4);
-	memcpy(&key_idx, in + 36, 4);
-	memcpy(&iv_idx, in + 40, 4);
-	memcpy(&compressed, in + 44, 4);
-
 	// Endian swap.
-	data_offset = swap64(data_offset);
-	data_size = swap64(data_size);
-	type = swap32(type);
-	program_idx = swap32(program_idx);
-	hashed = swap32(hashed);
-	sha1_idx = swap32(sha1_idx);
-	encrypted = swap32(encrypted);
-	key_idx = swap32(key_idx);
-	iv_idx = swap32(iv_idx);
-	compressed = swap32(compressed);
+	data_offset = read_from_ptr<be_t<u64>>(in);
+	data_size   = read_from_ptr<be_t<u64>>(in, 8);
+	type        = read_from_ptr<be_t<u32>>(in, 16);
+	program_idx = read_from_ptr<be_t<u32>>(in, 20);
+	hashed      = read_from_ptr<be_t<u32>>(in, 24);
+	sha1_idx    = read_from_ptr<be_t<u32>>(in, 28);
+	encrypted   = read_from_ptr<be_t<u32>>(in, 32);
+	key_idx     = read_from_ptr<be_t<u32>>(in, 36);
+	iv_idx      = read_from_ptr<be_t<u32>>(in, 40);
+	compressed  = read_from_ptr<be_t<u32>>(in, 44);
 }
 
 void MetadataSectionHeader::Show() const
@@ -610,18 +589,18 @@ void SceHeader::Load(const fs::file& f)
 	se_esize = Read64(f);
 }
 
-void SelfHeader::Load(const fs::file& f)
+void ext_hdr::Load(const fs::file& f)
 {
-	se_htype = Read64(f);
-	se_appinfooff = Read64(f);
-	se_elfoff = Read64(f);
-	se_phdroff = Read64(f);
-	se_shdroff = Read64(f);
-	se_secinfoff = Read64(f);
-	se_sceveroff = Read64(f);
-	se_controloff = Read64(f);
-	se_controlsize = Read64(f);
-	pad = Read64(f);
+	ext_hdr_version = Read64(f);
+	program_identification_hdr_offset = Read64(f);
+	ehdr_offset = Read64(f);
+	phdr_offset = Read64(f);
+	shdr_offset = Read64(f);
+	segment_ext_hdr_offset = Read64(f);
+	version_hdr_offset = Read64(f);
+	supplemental_hdr_offset = Read64(f);
+	supplemental_hdr_size = Read64(f);
+	padding = Read64(f);
 }
 
 SCEDecrypter::SCEDecrypter(const fs::file& s)
@@ -788,72 +767,32 @@ std::vector<fs::file> SCEDecrypter::MakeFile()
 	u32 data_buf_offset = 0;
 
 	// Write data.
-	for (unsigned int i = 0; i < meta_hdr.section_count; i++)
+	for (u32 i = 0; i < meta_hdr.section_count; i++)
 	{
+		const MetadataSectionHeader& hdr = meta_shdr[i];
+		const u8* src = data_buf.get() + data_buf_offset;
 		fs::file out_f = fs::make_stream<std::vector<u8>>();
 
-		bool isValid = true;
+		bool is_valid = true;
 
 		// Decompress if necessary.
-		if (meta_shdr[i].compressed == 2)
+		if (hdr.compressed == 2)
 		{
-			const usz BUFSIZE = 32 * 1024;
-			u8 tempbuf[BUFSIZE];
-			z_stream strm;
-			strm.zalloc = Z_NULL;
-			strm.zfree = Z_NULL;
-			strm.opaque = Z_NULL;
-			strm.avail_in = ::narrow<uInt>(meta_shdr[i].data_size);
-			strm.avail_out = BUFSIZE;
-			strm.next_in = data_buf.get()+data_buf_offset;
-			strm.next_out = tempbuf;
-#ifndef _MSC_VER
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#endif
-			int ret = inflateInit(&strm);
-#ifndef _MSC_VER
-#pragma GCC diagnostic pop
-#endif
-			while (strm.avail_in)
-			{
-				ret = inflate(&strm, Z_NO_FLUSH);
-				if (ret == Z_STREAM_END)
-					break;
-				if (ret != Z_OK)
-					isValid = false;
-
-				if (!strm.avail_out) {
-					out_f.write(tempbuf, BUFSIZE);
-					strm.next_out = tempbuf;
-					strm.avail_out = BUFSIZE;
-				}
-				else
-					break;
-			}
-
-			int inflate_res = Z_OK;
-			inflate_res = inflate(&strm, Z_FINISH);
-
-			if (inflate_res != Z_STREAM_END)
-				isValid = false;
-
-			out_f.write(tempbuf, BUFSIZE - strm.avail_out);
-			inflateEnd(&strm);
+			is_valid = unzip(src, hdr.data_size, out_f);
 		}
 		else
 		{
 			// Write the data.
-			out_f.write(data_buf.get()+data_buf_offset, meta_shdr[i].data_size);
+			out_f.write(src, hdr.data_size);
 		}
 
 		// Advance the data buffer offset by data size.
-		data_buf_offset += ::narrow<u32>(meta_shdr[i].data_size);
+		data_buf_offset += ::narrow<u32>(hdr.data_size);
 
 		if (out_f.pos() != out_f.size())
 			fmt::throw_exception("MakeELF written bytes (%llu) does not equal buffer size (%llu).", out_f.pos(), out_f.size());
 
-		if (isValid) vec.push_back(std::move(out_f));
+		if (is_valid) vec.push_back(std::move(out_f));
 	}
 
 	return vec;
@@ -873,7 +812,7 @@ bool SELFDecrypter::LoadHeaders(bool isElf32, SelfAdditionalInfo* out_info)
 
 	if (out_info)
 	{
-		out_info->valid = false;
+		*out_info = {};
 	}
 
 	// Check SCE magic.
@@ -884,19 +823,19 @@ bool SELFDecrypter::LoadHeaders(bool isElf32, SelfAdditionalInfo* out_info)
 	}
 
 	// Read SELF header.
-	self_hdr.Load(self_f);
+	m_ext_hdr.Load(self_f);
 
 	// Read the APP INFO.
-	self_f.seek(self_hdr.se_appinfooff);
-	app_info.Load(self_f);
+	self_f.seek(m_ext_hdr.program_identification_hdr_offset);
+	m_prog_id_hdr.Load(self_f);
 
 	if (out_info)
 	{
-		out_info->app_info = app_info;
+		out_info->prog_id_hdr = m_prog_id_hdr;
 	}
 
 	// Read ELF header.
-	self_f.seek(self_hdr.se_elfoff);
+	self_f.seek(m_ext_hdr.ehdr_offset);
 
 	if (isElf32)
 		elf32_hdr.Load(self_f);
@@ -912,7 +851,7 @@ bool SELFDecrypter::LoadHeaders(bool isElf32, SelfAdditionalInfo* out_info)
 			self_log.error("ELF program header offset is null!");
 			return false;
 		}
-		self_f.seek(self_hdr.se_phdroff);
+		self_f.seek(m_ext_hdr.phdr_offset);
 		for(u32 i = 0; i < elf32_hdr.e_phnum; ++i)
 		{
 			phdr32_arr.emplace_back();
@@ -929,7 +868,7 @@ bool SELFDecrypter::LoadHeaders(bool isElf32, SelfAdditionalInfo* out_info)
 			return false;
 		}
 
-		self_f.seek(self_hdr.se_phdroff);
+		self_f.seek(m_ext_hdr.phdr_offset);
 
 		for (u32 i = 0; i < elf64_hdr.e_phnum; ++i)
 		{
@@ -938,36 +877,51 @@ bool SELFDecrypter::LoadHeaders(bool isElf32, SelfAdditionalInfo* out_info)
 		}
 	}
 
-
 	// Read section info.
-	secinfo_arr.clear();
-	self_f.seek(self_hdr.se_secinfoff);
+	m_seg_ext_hdr.clear();
+	self_f.seek(m_ext_hdr.segment_ext_hdr_offset);
 
-	for(u32 i = 0; i < ((isElf32) ? elf32_hdr.e_phnum : elf64_hdr.e_phnum); ++i)
+	for(u32 i = 0; i < (isElf32 ? elf32_hdr.e_phnum : elf64_hdr.e_phnum); ++i)
 	{
-		secinfo_arr.emplace_back();
-		secinfo_arr.back().Load(self_f);
+		if (self_f.pos() >= self_f.size())
+		{
+			return false;
+		}
+
+		m_seg_ext_hdr.emplace_back();
+		m_seg_ext_hdr.back().Load(self_f);
+	}
+
+	if (m_ext_hdr.version_hdr_offset == 0 || utils::add_saturate<u64>(m_ext_hdr.version_hdr_offset, sizeof(version_header)) > self_f.size())
+	{
+		return false;
 	}
 
 	// Read SCE version info.
-	self_f.seek(self_hdr.se_sceveroff);
-	scev_info.Load(self_f);
+	self_f.seek(m_ext_hdr.version_hdr_offset);
+
+	m_version_hdr.Load(self_f);
 
 	// Read control info.
-	ctrlinfo_arr.clear();
-	self_f.seek(self_hdr.se_controloff);
+	m_supplemental_hdr_arr.clear();
+	self_f.seek(m_ext_hdr.supplemental_hdr_offset);
 
-	for (u64 i = 0; i < self_hdr.se_controlsize;)
+	for (u64 i = 0; i < m_ext_hdr.supplemental_hdr_size;)
 	{
-		ctrlinfo_arr.emplace_back();
-		ControlInfo &cinfo = ctrlinfo_arr.back();
+		if (self_f.pos() >= self_f.size())
+		{
+			return false;
+		}
+
+		m_supplemental_hdr_arr.emplace_back();
+		supplemental_header& cinfo = m_supplemental_hdr_arr.back();
 		cinfo.Load(self_f);
 		i += cinfo.size;
 	}
 
 	if (out_info)
 	{
-		out_info->ctrl_info = ctrlinfo_arr;
+		out_info->supplemental_hdr = m_supplemental_hdr_arr;
 	}
 
 	// Read ELF section headers.
@@ -981,7 +935,7 @@ bool SELFDecrypter::LoadHeaders(bool isElf32, SelfAdditionalInfo* out_info)
 			return true;
 		}
 
-		self_f.seek(self_hdr.se_shdroff);
+		self_f.seek(m_ext_hdr.shdr_offset);
 
 		for(u32 i = 0; i < elf32_hdr.e_shnum; ++i)
 		{
@@ -998,7 +952,7 @@ bool SELFDecrypter::LoadHeaders(bool isElf32, SelfAdditionalInfo* out_info)
 			return true;
 		}
 
-		self_f.seek(self_hdr.se_shdroff);
+		self_f.seek(m_ext_hdr.shdr_offset);
 
 		for(u32 i = 0; i < elf64_hdr.e_shnum; ++i)
 		{
@@ -1023,11 +977,11 @@ void SELFDecrypter::ShowHeaders(bool isElf32)
 	self_log.notice("----------------------------------------------------");
 	self_log.notice("SELF header");
 	self_log.notice("----------------------------------------------------");
-	self_hdr.Show();
+	m_ext_hdr.Show();
 	self_log.notice("----------------------------------------------------");
 	self_log.notice("APP INFO");
 	self_log.notice("----------------------------------------------------");
-	app_info.Show();
+	m_prog_id_hdr.Show();
 	self_log.notice("----------------------------------------------------");
 	self_log.notice("ELF header");
 	self_log.notice("----------------------------------------------------");
@@ -1040,17 +994,17 @@ void SELFDecrypter::ShowHeaders(bool isElf32)
 	self_log.notice("----------------------------------------------------");
 	self_log.notice("Section info");
 	self_log.notice("----------------------------------------------------");
-	for(unsigned int i = 0; i < secinfo_arr.size(); i++)
-		secinfo_arr[i].Show();
+	for(unsigned int i = 0; i < m_seg_ext_hdr.size(); i++)
+		m_seg_ext_hdr[i].Show();
 	self_log.notice("----------------------------------------------------");
 	self_log.notice("SCE version info");
 	self_log.notice("----------------------------------------------------");
-	scev_info.Show();
+	m_version_hdr.Show();
 	self_log.notice("----------------------------------------------------");
 	self_log.notice("Control info");
 	self_log.notice("----------------------------------------------------");
-	for(unsigned int i = 0; i < ctrlinfo_arr.size(); i++)
-		ctrlinfo_arr[i].Show();
+	for(unsigned int i = 0; i < m_supplemental_hdr_arr.size(); i++)
+		m_supplemental_hdr_arr[i].Show();
 	self_log.notice("----------------------------------------------------");
 	self_log.notice("ELF section headers");
 	self_log.notice("----------------------------------------------------");
@@ -1123,11 +1077,11 @@ bool SELFDecrypter::DecryptNPDRM(u8 *metadata, u32 metadata_size)
 const NPD_HEADER* SELFDecrypter::GetNPDHeader() const
 {
 	// Parse the control info structures to find the NPDRM control info.
-	for (const ControlInfo& info : ctrlinfo_arr)
+	for (const supplemental_header& info : m_supplemental_hdr_arr)
 	{
 		if (info.type == 3)
 		{
-			return &info.npdrm;
+			return &info.PS3_npdrm_header.npd;
 		}
 	}
 
@@ -1150,7 +1104,7 @@ bool SELFDecrypter::LoadMetadata(u8* klic_key)
 	self_f.read(metadata_headers.get(), metadata_headers_size);
 
 	// Find the right keyset from the key vault.
-	SELF_KEY keyset = key_v.FindSelfKey(app_info.self_type, sce_hdr.se_flags, app_info.version);
+	SELF_KEY keyset = key_v.FindSelfKey(m_prog_id_hdr.program_type, sce_hdr.se_flags, m_prog_id_hdr.program_sceversion);
 
 	// Set klic if given
 	if (klic_key)
@@ -1333,15 +1287,15 @@ static bool IsSelfElf32(const fs::file& f)
 
 	f.seek(0);
 
-	SceHeader hdr;
-	SelfHeader sh;
+	SceHeader hdr{};
+	ext_hdr sh{};
 	hdr.Load(f);
 	sh.Load(f);
 
 	// Locate the class byte and check it.
 	u8 elf_class[0x8];
 
-	f.seek(sh.se_elfoff);
+	f.seek(sh.ehdr_offset);
 	f.read(elf_class, 0x8);
 
 	return (elf_class[4] == 1);
@@ -1409,11 +1363,11 @@ static bool CheckDebugSelf(fs::file& s)
 	return false;
 }
 
-fs::file decrypt_self(fs::file elf_or_self, u8* klic_key, SelfAdditionalInfo* out_info)
+fs::file decrypt_self(fs::file elf_or_self, u8* klic_key, SelfAdditionalInfo* out_info, bool require_encrypted)
 {
 	if (out_info)
 	{
-		out_info->valid = false;
+		*out_info = {};
 	}
 
 	if (!elf_or_self)
@@ -1424,8 +1378,14 @@ fs::file decrypt_self(fs::file elf_or_self, u8* klic_key, SelfAdditionalInfo* ou
 	elf_or_self.seek(0);
 
 	// Check SELF header first. Check for a debug SELF.
-	if (elf_or_self.size() >= 4 && elf_or_self.read<u32>() == "SCE\0"_u32 && !CheckDebugSelf(elf_or_self))
+	if (elf_or_self.size() >= 4 && elf_or_self.read<u32>() == "SCE\0"_u32)
 	{
+		if (CheckDebugSelf(elf_or_self))
+		{
+			// TODO: Decrypt
+			return elf_or_self;
+		}
+
 		// Check the ELF file class (32 or 64 bit).
 		const bool isElf32 = IsSelfElf32(elf_or_self);
 
@@ -1455,6 +1415,11 @@ fs::file decrypt_self(fs::file elf_or_self, u8* klic_key, SelfAdditionalInfo* ou
 
 		// Make a new ELF file from this SELF.
 		return self_dec.MakeElf(isElf32);
+	}
+
+	if (require_encrypted)
+	{
+		return {};
 	}
 
 	return elf_or_self;

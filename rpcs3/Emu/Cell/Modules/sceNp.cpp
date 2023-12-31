@@ -3,6 +3,7 @@
 #include "Emu/system_utils.hpp"
 #include "Emu/VFS.h"
 #include "Emu/Cell/PPUModule.h"
+#include "Emu/Cell/Modules/cellUserInfo.h"
 #include "Emu/Io/interception.h"
 #include "Utilities/StrUtil.h"
 
@@ -16,6 +17,7 @@
 
 #include "Emu/Cell/lv2/sys_time.h"
 #include "Emu/Cell/lv2/sys_fs.h"
+#include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/NP/np_handler.h"
 #include "Emu/NP/np_contexts.h"
 #include "Emu/NP/np_helpers.h"
@@ -407,6 +409,8 @@ void message_data::print() const
 	sceNp.notice("commId: %s, msgId: %d, mainType: %d, subType: %d, subject: %s, body: %s, data_size: %d", static_cast<const char *>(commId.data), msgId, mainType, subType, subject, body, data.size());
 }
 
+extern void lv2_sleep(u64 timeout, ppu_thread* ppu = nullptr);
+
 error_code sceNpInit(u32 poolsize, vm::ptr<void> poolptr)
 {
 	sceNp.warning("sceNpInit(poolsize=0x%x, poolptr=*0x%x)", poolsize, poolptr);
@@ -467,7 +471,7 @@ error_code npDrmIsAvailable(vm::cptr<u8> k_licensee_addr, vm::cptr<char> drm_pat
 	if (k_licensee_addr)
 	{
 		std::memcpy(&k_licensee, k_licensee_addr.get_ptr(), sizeof(k_licensee));
-		sceNp.notice("npDrmIsAvailable(): KLicense key %s", std::bit_cast<be_t<u128>>(k_licensee));
+		sceNp.notice("npDrmIsAvailable(): KLicense key or KLIC=%s", std::bit_cast<be_t<u128>>(k_licensee));
 	}
 
 	if (Emu.GetFakeCat() == "PE")
@@ -476,7 +480,8 @@ error_code npDrmIsAvailable(vm::cptr<u8> k_licensee_addr, vm::cptr<char> drm_pat
 		sceNp.success("npDrmIsAvailable(): PSP remaster KLicense key applied.");
 	}
 
-	const std::string enc_drm_path(drm_path.get_ptr(), std::find(drm_path.get_ptr(), drm_path.get_ptr() + 0x100, '\0'));
+	std::string enc_drm_path;
+	ensure(vm::read_string(drm_path.addr(), 0x100, enc_drm_path, true), "Secret access violation");
 
 	sceNp.warning(u8"npDrmIsAvailable(): drm_path=“%s”", enc_drm_path);
 
@@ -526,13 +531,19 @@ error_code npDrmIsAvailable(vm::cptr<u8> k_licensee_addr, vm::cptr<char> drm_pat
 			{
 				const std::string rap_file = rpcs3::utils::get_rap_file_path(npd.content_id);
 
-				if (fs::file rap_fd{rap_file}; rap_fd && rap_fd.size() >= sizeof(u128))
+				if (fs::file rap_fd{rap_file})
 				{
+					if (rap_fd.size() < sizeof(u128))
+					{
+						sceNp.error("npDrmIsAvailable(): Rap file too small: '%s' (%d bytes)", rap_file, rap_fd.size());
+						return {SCE_NP_DRM_ERROR_BAD_FORMAT, enc_drm_path};
+					}
+
 					npdrmkeys.install_decryption_key(GetEdatRifKeyFromRapFile(rap_fd));
 				}
 				else
 				{
-					sceNp.error(u8"npDrmIsAvailable(): Rap file not found: “%s”", rap_file);
+					sceNp.error("npDrmIsAvailable(): Rap file not found: '%s' (%s)", rap_file, fs::g_tls_error);
 					return {SCE_NP_DRM_ERROR_LICENSE_NOT_FOUND, enc_drm_path};
 				}
 			}
@@ -552,18 +563,40 @@ error_code npDrmIsAvailable(vm::cptr<u8> k_licensee_addr, vm::cptr<char> drm_pat
 	return CELL_OK;
 }
 
-error_code sceNpDrmIsAvailable(vm::cptr<u8> k_licensee_addr, vm::cptr<char> drm_path)
+error_code sceNpDrmIsAvailable(ppu_thread& ppu, vm::cptr<u8> k_licensee_addr, vm::cptr<char> drm_path)
 {
 	sceNp.warning("sceNpDrmIsAvailable(k_licensee=*0x%x, drm_path=*0x%x)", k_licensee_addr, drm_path);
 
-	return npDrmIsAvailable(k_licensee_addr, drm_path);
+	if (!drm_path)
+	{
+		return SCE_NP_DRM_ERROR_INVALID_PARAM;
+	}
+
+	lv2_obj::sleep(ppu);
+
+	const auto ret = npDrmIsAvailable(k_licensee_addr, drm_path);
+	lv2_sleep(50'000, &ppu);
+
+	return ret;
 }
 
-error_code sceNpDrmIsAvailable2(vm::cptr<u8> k_licensee_addr, vm::cptr<char> drm_path)
+error_code sceNpDrmIsAvailable2(ppu_thread& ppu, vm::cptr<u8> k_licensee_addr, vm::cptr<char> drm_path)
 {
 	sceNp.warning("sceNpDrmIsAvailable2(k_licensee=*0x%x, drm_path=*0x%x)", k_licensee_addr, drm_path);
 
-	return npDrmIsAvailable(k_licensee_addr, drm_path);
+	if (!drm_path)
+	{
+		return SCE_NP_DRM_ERROR_INVALID_PARAM;
+	}
+
+	lv2_obj::sleep(ppu);
+
+	const auto ret = npDrmIsAvailable(k_licensee_addr, drm_path);
+
+	// TODO: Accurate sleep time
+	//lv2_sleep(20000, &ppu);
+
+	return ret;
 }
 
 error_code npDrmVerifyUpgradeLicense(vm::cptr<char> content_id)
@@ -573,8 +606,10 @@ error_code npDrmVerifyUpgradeLicense(vm::cptr<char> content_id)
 		return SCE_NP_DRM_ERROR_INVALID_PARAM;
 	}
 
-	const std::string content_str(content_id.get_ptr(), std::find(content_id.get_ptr(), content_id.get_ptr() + 0x2f, '\0'));
-	sceNp.warning("npDrmVerifyUpgradeLicense(): content_id=%s", content_id);
+	std::string content_str;
+	ensure(vm::read_string(content_id.addr(), 0x2f, content_str, true), "Secret access violation");
+
+	sceNp.warning("npDrmVerifyUpgradeLicense(): content_id=%s", content_str);
 
 	if (!rpcs3::utils::verify_c00_unlock_edat(content_str))
 		return SCE_NP_DRM_ERROR_LICENSE_NOT_FOUND;
@@ -628,7 +663,9 @@ error_code sceNpDrmGetTimelimit(vm::cptr<char> path, vm::ptr<u64> time_remain)
 		return ret;
 	}
 
-	const std::string enc_drm_path(path.get_ptr(), std::find(path.get_ptr(), path.get_ptr() + 0x100, '\0'));
+	std::string enc_drm_path;
+	ensure(vm::read_string(path.addr(), 0x100, enc_drm_path, true), "Secret access violation");
+
 	const auto [fs_error, ppath, real_path, enc_file, type] = lv2_file::open(enc_drm_path, 0, 0);
 
 	if (fs_error)
@@ -2043,7 +2080,7 @@ error_code sceNpCommerceDestroyCtx(u32 ctx_id)
 	return CELL_OK;
 }
 
-error_code sceNpCommerceInitProductCategory(vm::ptr<SceNpCommerceProductCategory> pc, vm::cptr<void> data, u64 data_size)
+error_code sceNpCommerceInitProductCategory(vm::ptr<SceNpCommerceProductCategory> pc, vm::cptr<void> data, u32 data_size)
 {
 	sceNp.todo("sceNpCommerceInitProductCategory(pc=*0x%x, data=*0x%x, data_size=%d)", pc, data, data_size);
 	return CELL_OK;
@@ -2066,7 +2103,7 @@ error_code sceNpCommerceGetProductCategoryFinish(u32 req_id)
 	return CELL_OK;
 }
 
-error_code sceNpCommerceGetProductCategoryResult(u32 req_id, vm::ptr<void> buf, u64 buf_size, vm::ptr<u64> fill_size)
+error_code sceNpCommerceGetProductCategoryResult(u32 req_id, vm::ptr<void> buf, u32 buf_size, vm::ptr<u32> fill_size)
 {
 	sceNp.todo("sceNpCommerceGetProductCategoryResult(req_id=%d, buf=*0x%x, buf_size=%d, fill_size=*0x%x)", req_id, buf, buf_size, fill_size);
 	return CELL_OK;
@@ -2741,7 +2778,7 @@ error_code sceNpLookupUserProfileAsync(s32 transId, vm::cptr<SceNpId> npId, vm::
 }
 
 error_code sceNpLookupUserProfileWithAvatarSize(s32 transId, s32 avatarSizeType, vm::cptr<SceNpId> npId, vm::ptr<SceNpUserInfo> userInfo, vm::ptr<SceNpAboutMe> aboutMe,
-    vm::ptr<SceNpMyLanguages> languages, vm::ptr<SceNpCountryCode> countryCode, vm::ptr<void> avatarImageData, u64 avatarImageDataMaxSize, vm::ptr<u64> avatarImageDataSize, vm::ptr<void> option)
+    vm::ptr<SceNpMyLanguages> languages, vm::ptr<SceNpCountryCode> countryCode, vm::ptr<void> avatarImageData, u32 avatarImageDataMaxSize, vm::ptr<u32> avatarImageDataSize, vm::ptr<void> option)
 {
 	sceNp.todo("sceNpLookupUserProfileWithAvatarSize(transId=%d, avatarSizeType=%d, npId=*0x%x, userInfo=*0x%x, aboutMe=*0x%x, languages=*0x%x, countryCode=*0x%x, avatarImageData=*0x%x, "
 	           "avatarImageDataMaxSize=%d, avatarImageDataSize=*0x%x, option=*0x%x)",
@@ -2773,7 +2810,7 @@ error_code sceNpLookupUserProfileWithAvatarSize(s32 transId, s32 avatarSizeType,
 }
 
 error_code sceNpLookupUserProfileWithAvatarSizeAsync(s32 transId, s32 avatarSizeType, vm::cptr<SceNpId> npId, vm::ptr<SceNpUserInfo> userInfo, vm::ptr<SceNpAboutMe> aboutMe,
-    vm::ptr<SceNpMyLanguages> languages, vm::ptr<SceNpCountryCode> countryCode, vm::ptr<void> avatarImageData, u64 avatarImageDataMaxSize, vm::ptr<u64> avatarImageDataSize, s32 prio,
+    vm::ptr<SceNpMyLanguages> languages, vm::ptr<SceNpCountryCode> countryCode, vm::ptr<void> avatarImageData, u32 avatarImageDataMaxSize, vm::ptr<u32> avatarImageDataSize, s32 prio,
     vm::ptr<void> option)
 {
 	sceNp.todo("sceNpLookupUserProfileWithAvatarSizeAsync(transId=%d, avatarSizeType=%d, npId=*0x%x, userInfo=*0x%x, aboutMe=*0x%x, languages=*0x%x, countryCode=*0x%x, avatarImageData=*0x%x, "
@@ -2891,7 +2928,7 @@ error_code sceNpLookupTitleStorageAsync()
 	return CELL_OK;
 }
 
-error_code sceNpLookupTitleSmallStorage(s32 transId, vm::ptr<void> data, u64 maxSize, vm::ptr<u64> contentLength, vm::ptr<void> option)
+error_code sceNpLookupTitleSmallStorage(s32 transId, vm::ptr<void> data, u32 maxSize, vm::ptr<u32> contentLength, vm::ptr<void> option)
 {
 	sceNp.todo("sceNpLookupTitleSmallStorage(transId=%d, data=*0x%x, maxSize=%d, contentLength=*0x%x, option=*0x%x)", transId, data, maxSize, contentLength, option);
 
@@ -2925,7 +2962,7 @@ error_code sceNpLookupTitleSmallStorage(s32 transId, vm::ptr<void> data, u64 max
 	return CELL_OK;
 }
 
-error_code sceNpLookupTitleSmallStorageAsync(s32 transId, vm::ptr<void> data, u64 maxSize, vm::ptr<u64> contentLength, s32 prio, vm::ptr<void> option)
+error_code sceNpLookupTitleSmallStorageAsync(s32 transId, vm::ptr<void> data, u32 maxSize, vm::ptr<u32> contentLength, s32 prio, vm::ptr<void> option)
 {
 	sceNp.todo("sceNpLookupTitleSmallStorageAsync(transId=%d, data=*0x%x, maxSize=%d, contentLength=*0x%x, prio=%d, option=*0x%x)", transId, data, maxSize, contentLength, prio, option);
 
@@ -2946,7 +2983,7 @@ error_code sceNpLookupTitleSmallStorageAsync(s32 transId, vm::ptr<void> data, u6
 		return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
 	}
 
-	//	if (something > maxSize)
+	//if (something > maxSize)
 	//{
 	//	return SCE_NP_COMMUNITY_ERROR_BODY_TOO_LARGE;
 	//}
@@ -3009,7 +3046,7 @@ error_code sceNpManagerGetStatus(vm::ptr<s32> status)
 
 	if (!nph.is_NP_init)
 	{
-		//return SCE_NP_ERROR_NOT_INITIALIZED;
+		return SCE_NP_ERROR_NOT_INITIALIZED;
 	}
 
 	if (!status)
@@ -3030,7 +3067,7 @@ error_code sceNpManagerGetNetworkTime(vm::ptr<CellRtcTick> pTick)
 
 	if (!nph.is_NP_init)
 	{
-		//return SCE_NP_ERROR_NOT_INITIALIZED;
+		return not_an_error(SCE_NP_ERROR_NOT_INITIALIZED);
 	}
 
 	if (!pTick)
@@ -3048,18 +3085,7 @@ error_code sceNpManagerGetNetworkTime(vm::ptr<CellRtcTick> pTick)
 		return SCE_NP_ERROR_INVALID_STATE;
 	}
 
-	vm::var<s64> sec;
-	vm::var<s64> nsec;
-
-	error_code ret = sys_time_get_current_time(sec, nsec);
-
-	if (ret != CELL_OK)
-	{
-		return ret;
-	}
-
-	// Taken from cellRtc
-	pTick->tick = *nsec / 1000 + *sec * cellRtcGetTickResolution() + 62135596800000000ULL;
+	pTick->tick = nph.get_network_time();
 
 	return CELL_OK;
 }
@@ -3072,7 +3098,7 @@ error_code sceNpManagerGetOnlineId(vm::ptr<SceNpOnlineId> onlineId)
 
 	if (!nph.is_NP_init)
 	{
-		//return SCE_NP_ERROR_NOT_INITIALIZED;
+		return SCE_NP_ERROR_NOT_INITIALIZED;
 	}
 
 	if (!onlineId)
@@ -3101,10 +3127,10 @@ error_code sceNpManagerGetNpId(ppu_thread&, vm::ptr<SceNpId> npId)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	// if (!nph.is_NP_init)
-	// {
-	// 	return SCE_NP_ERROR_NOT_INITIALIZED;
-	// }
+	if (!nph.is_NP_init)
+	{
+		return SCE_NP_ERROR_NOT_INITIALIZED;
+	}
 
 	if (!npId)
 	{
@@ -3354,7 +3380,7 @@ error_code sceNpManagerGetChatRestrictionFlag(vm::ptr<s32> isRestricted)
 
 error_code sceNpManagerGetCachedInfo(CellSysutilUserId userId, vm::ptr<SceNpManagerCacheParam> param)
 {
-	sceNp.todo("sceNpManagerGetCachedInfo(userId=%d, param=*0x%x)", userId, param);
+	sceNp.warning("sceNpManagerGetCachedInfo(userId=%d, param=*0x%x)", userId, param);
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
@@ -3367,6 +3393,17 @@ error_code sceNpManagerGetCachedInfo(CellSysutilUserId userId, vm::ptr<SceNpMana
 	{
 		return SCE_NP_ERROR_INVALID_ARGUMENT;
 	}
+
+	if (userId != CELL_SYSUTIL_USERID_CURRENT && userId != Emu.GetUsrId())
+	{
+		return CELL_ENOENT;
+	}
+
+	param->size = sizeof(SceNpManagerCacheParam);
+	param->onlineId = nph.get_online_id();
+	param->npId = nph.get_npid();
+	param->onlineName = nph.get_online_name();
+	param->avatarUrl = nph.get_avatar_url();
 
 	return CELL_OK;
 }
@@ -3594,14 +3631,14 @@ error_code sceNpMatchingDestroyCtx(u32 ctx_id)
 	return CELL_OK;
 }
 
-error_code sceNpMatchingGetResult(u32 ctx_id, u32 req_id, vm::ptr<void> buf, vm::ptr<u64> size, vm::ptr<s32> event)
+error_code sceNpMatchingGetResult(u32 ctx_id, u32 req_id, vm::ptr<void> buf, vm::ptr<u32> size, vm::ptr<s32> event)
 {
 	sceNp.todo("sceNpMatchingGetResult(ctx_id=%d, req_id=%d, buf=*0x%x, size=*0x%x, event=*0x%x)", ctx_id, req_id, buf, size, event);
 
 	return CELL_OK;
 }
 
-error_code sceNpMatchingGetResultGUI(vm::ptr<void> buf, vm::ptr<u64> size, vm::ptr<s32> event)
+error_code sceNpMatchingGetResultGUI(vm::ptr<void> buf, vm::ptr<u32> size, vm::ptr<s32> event)
 {
 	sceNp.todo("sceNpMatchingGetResultGUI(buf=*0x%x, size=*0x%x, event=*0x%x)", buf, size, event);
 
@@ -3650,7 +3687,7 @@ error_code sceNpMatchingGetRoomSearchFlag(u32 ctx_id, vm::ptr<SceNpLobbyId> lobb
 	return CELL_OK;
 }
 
-error_code sceNpMatchingGetRoomMemberListLocal(u32 ctx_id, vm::ptr<SceNpRoomId> room_id, vm::ptr<u64> buflen, vm::ptr<void> buf)
+error_code sceNpMatchingGetRoomMemberListLocal(u32 ctx_id, vm::ptr<SceNpRoomId> room_id, vm::ptr<u32> buflen, vm::ptr<void> buf)
 {
 	sceNp.todo("sceNpMatchingGetRoomMemberListLocal(ctx_id=%d, room_id=*0x%x, buflen=*0x%x, buf=*0x%x)", ctx_id, room_id, buflen, buf);
 
@@ -3926,7 +3963,9 @@ error_code sceNpScoreSetTimeout(s32 ctxId, usecond_t timeout)
 		return SCE_NP_COMMUNITY_ERROR_INVALID_ARGUMENT;
 	}
 
-	if (static_cast<u32>(ctxId) >= score_transaction_ctx::id_base)
+	const u32 idm_id = static_cast<u32>(ctxId);
+
+	if (idm_id >= score_transaction_ctx::id_base && idm_id < (score_transaction_ctx::id_base + score_transaction_ctx::id_count))
 	{
 		auto trans = idm::get<score_transaction_ctx>(ctxId);
 		if (!trans)
@@ -3935,7 +3974,7 @@ error_code sceNpScoreSetTimeout(s32 ctxId, usecond_t timeout)
 		}
 		trans->timeout = timeout;
 	}
-	else
+	else if (idm_id >= score_ctx::id_base && idm_id < (score_ctx::id_base + score_ctx::id_count))
 	{
 		auto score = idm::get<score_ctx>(ctxId);
 		if (!ctxId)
@@ -3943,6 +3982,10 @@ error_code sceNpScoreSetTimeout(s32 ctxId, usecond_t timeout)
 			return SCE_NP_COMMUNITY_ERROR_INVALID_ID;
 		}
 		score->timeout = timeout;
+	}
+	else
+	{
+		return SCE_NP_COMMUNITY_ERROR_INVALID_ID;
 	}
 
 	return CELL_OK;
@@ -4025,7 +4068,7 @@ error_code sceNpScorePollAsync(s32 transId, vm::ptr<s32> result)
 		return SCE_NP_COMMUNITY_ERROR_INVALID_ID;
 	}
 
-	auto res = trans->get_score_transaction_status();
+	auto res = trans->get_transaction_status();
 
 	if (!res)
 	{
@@ -4742,7 +4785,7 @@ error_code sceNpScoreAbortTransaction(s32 transId)
 		return SCE_NP_COMMUNITY_ERROR_INVALID_ID;
 	}
 
-	trans->abort_score_transaction();
+	trans->abort_transaction();
 
 	return CELL_OK;
 }

@@ -12,6 +12,8 @@
 #include "Emu/IdManager.h"
 #include "Emu/Cell/Modules/cellScreenshot.h"
 #include "Emu/Cell/Modules/cellVideoOut.h"
+#include "Emu/Cell/Modules/cellAudio.h"
+#include "Emu/Cell/lv2/sys_rsxaudio.h"
 #include "Emu/RSX/rsx_utils.h"
 #include "Emu/RSX/Overlays/overlay_message.h"
 #include "Emu/Io/recording_config.h"
@@ -299,7 +301,7 @@ void gs_frame::keyPressEvent(QKeyEvent *keyEvent)
 
 void gs_frame::handle_shortcut(gui::shortcuts::shortcut shortcut_key, const QKeySequence& key_sequence)
 {
-	gui_log.notice("Game window registered shortcut: %s (%s)", shortcut_key, key_sequence.toString().toStdString());
+	gui_log.notice("Game window registered shortcut: %s (%s)", shortcut_key, key_sequence.toString());
 
 	switch (shortcut_key)
 	{
@@ -372,8 +374,8 @@ void gs_frame::handle_shortcut(gui::shortcuts::shortcut shortcut_key, const QKey
 				return;
 			}
 
-			extern bool boot_last_savestate();
-			boot_last_savestate();
+			extern bool boot_last_savestate(bool testing);
+			boot_last_savestate(false);
 		}
 		break;
 	}
@@ -445,9 +447,9 @@ void gs_frame::toggle_recording()
 	{
 		m_video_encoder->stop();
 
-		if (!video_provider.set_image_sink(nullptr, recording_mode::rpcs3))
+		if (!video_provider.set_video_sink(nullptr, recording_mode::rpcs3))
 		{
-			gui_log.warning("The video provider could not release the image sink. A sink with higher priority must have been set.");
+			gui_log.warning("The video provider could not release the video sink. A sink with higher priority must have been set.");
 		}
 
 		// Play a sound
@@ -489,21 +491,47 @@ void gs_frame::toggle_recording()
 		video_path += "recording_" + date_time::current_time_narrow<'_'>() + ".mp4";
 
 		utils::video_encoder::frame_format output_format{};
-		output_format.av_pixel_format = static_cast<AVPixelFormat>(g_cfg_recording.pixel_format.get());
-		output_format.width = g_cfg_recording.width;
-		output_format.height = g_cfg_recording.height;
-		output_format.pitch = g_cfg_recording.width * 4;
+		output_format.av_pixel_format = static_cast<AVPixelFormat>(g_cfg_recording.video.pixel_format.get());
+		output_format.width = g_cfg_recording.video.width;
+		output_format.height = g_cfg_recording.video.height;
+		output_format.pitch = g_cfg_recording.video.width * 4;
 
+		m_video_encoder->use_internal_audio = true;
+		m_video_encoder->use_internal_video = true;
 		m_video_encoder->set_path(video_path);
-		m_video_encoder->set_framerate(g_cfg_recording.framerate);
-		m_video_encoder->set_video_bitrate(g_cfg_recording.video_bps);
-		m_video_encoder->set_video_codec(g_cfg_recording.video_codec);
-		m_video_encoder->set_max_b_frames(g_cfg_recording.max_b_frames);
-		m_video_encoder->set_gop_size(g_cfg_recording.gop_size);
+		m_video_encoder->set_framerate(g_cfg_recording.video.framerate);
+		m_video_encoder->set_video_bitrate(g_cfg_recording.video.video_bps);
+		m_video_encoder->set_video_codec(g_cfg_recording.video.video_codec);
+		m_video_encoder->set_max_b_frames(g_cfg_recording.video.max_b_frames);
+		m_video_encoder->set_gop_size(g_cfg_recording.video.gop_size);
 		m_video_encoder->set_output_format(output_format);
-		m_video_encoder->set_sample_rate(0);   // TODO
-		m_video_encoder->set_audio_bitrate(0); // TODO
-		m_video_encoder->set_audio_codec(0);   // TODO
+
+		switch (g_cfg.audio.provider)
+		{
+		case audio_provider::none:
+		{
+			// Disable audio recording
+			m_video_encoder->use_internal_audio = false;
+			break;
+		}
+		case audio_provider::cell_audio:
+		{
+			const cell_audio_config& cfg = g_fxo->get<cell_audio>().cfg;
+			m_video_encoder->set_sample_rate(cfg.audio_sampling_rate);
+			m_video_encoder->set_audio_channels(cfg.audio_channels);
+			break;
+		}
+		case audio_provider::rsxaudio:
+		{
+			const auto& rsx_audio = g_fxo->get<rsx_audio_backend>();
+			m_video_encoder->set_sample_rate(rsx_audio.get_sample_rate());
+			m_video_encoder->set_audio_channels(rsx_audio.get_channel_count());
+			break;
+		}
+		}
+
+		m_video_encoder->set_audio_bitrate(g_cfg_recording.audio.audio_bps);
+		m_video_encoder->set_audio_codec(g_cfg_recording.audio.audio_codec);
 		m_video_encoder->encode();
 
 		if (m_video_encoder->has_error)
@@ -513,15 +541,15 @@ void gs_frame::toggle_recording()
 			return;
 		}
 
-		if (!video_provider.set_image_sink(m_video_encoder, recording_mode::rpcs3))
+		if (!video_provider.set_video_sink(m_video_encoder, recording_mode::rpcs3))
 		{
-			gui_log.warning("The video provider could not set the image sink. A sink with higher priority must have been set.");
+			gui_log.warning("The video provider could not set the video sink. A sink with higher priority must have been set.");
 			rsx::overlays::queue_message(tr("Recording not possible").toStdString());
 			m_video_encoder->stop();
 			return;
 		}
 
-		video_provider.set_pause_time(0);
+		video_provider.set_pause_time_us(0);
 
 		g_recording_mode = recording_mode::rpcs3;
 
@@ -579,7 +607,13 @@ bool gs_frame::get_mouse_lock_state()
 
 void gs_frame::hide_on_close()
 {
-	if (!(+g_progr))
+	// Make sure not to save the hidden state, which is useless to us.
+	const Visibility current_visibility = visibility();
+	m_gui_settings->SetValue(gui::gs_visibility, current_visibility == Visibility::Hidden ? Visibility::AutomaticVisibility : current_visibility);
+	m_gui_settings->SetValue(gui::gs_geometry, geometry());
+	m_gui_settings->sync();
+
+	if (!g_progr.load())
 	{
 		// Hide the dialog before stopping if no progress bar is being shown.
 		// Otherwise users might think that the game softlocked if stopping takes too long.
@@ -604,11 +638,17 @@ void gs_frame::close()
 
 		if (!Emu.IsStopped())
 		{
-			// Blocking shutdown request. Obsolete, but I'm keeping it here as last resort.
-			Emu.GracefulShutdown(true, false);
-		}
+			// Notify progress dialog cancellation
+			g_system_progress_canceled = true;
 
-		deleteLater();
+			// Blocking shutdown request. Obsolete, but I'm keeping it here as last resort.
+			Emu.after_kill_callback = [this](){ deleteLater(); };
+			Emu.GracefulShutdown(true);
+		}
+		else
+		{
+			deleteLater();
+		}
 	});
 }
 
@@ -627,9 +667,18 @@ void gs_frame::show()
 	Emu.CallFromMainThread([this]()
 	{
 		QWindow::show();
+
 		if (g_cfg.misc.start_fullscreen || m_start_games_fullscreen)
 		{
 			setVisibility(FullScreen);
+		}
+		else if (const QVariant var = m_gui_settings->GetValue(gui::gs_visibility); var.canConvert<Visibility>())
+		{
+			// Restore saved visibility from last time. Make sure not to hide the window, or the user can't access it anymore.
+			if (const Visibility visibility = var.value<Visibility>(); visibility != Visibility::Hidden)
+			{
+				setVisibility(visibility);
+			}
 		}
 	});
 
@@ -707,11 +756,6 @@ int gs_frame::client_height()
 	return height() * devicePixelRatio();
 }
 
-double gs_frame::client_device_pixel_ratio() const
-{
-	return devicePixelRatio();
-}
-
 void gs_frame::flip(draw_context_t, bool /*skip_frame*/)
 {
 	static Timer fps_t;
@@ -759,13 +803,13 @@ bool gs_frame::can_consume_frame() const
 	return video_provider.can_consume_frame();
 }
 
-void gs_frame::present_frame(std::vector<u8>& data, const u32 width, const u32 height, bool is_bgra) const
+void gs_frame::present_frame(std::vector<u8>& data, u32 pitch, u32 width, u32 height, bool is_bgra) const
 {
 	utils::video_provider& video_provider = g_fxo->get<utils::video_provider>();
-	video_provider.present_frame(data, width, height, is_bgra);
+	video_provider.present_frame(data, pitch, width, height, is_bgra);
 }
 
-void gs_frame::take_screenshot(std::vector<u8> data, const u32 sshot_width, const u32 sshot_height, bool is_bgra)
+void gs_frame::take_screenshot(std::vector<u8> data, u32 sshot_width, u32 sshot_height, bool is_bgra)
 {
 	std::thread(
 		[sshot_width, sshot_height, is_bgra](std::vector<u8> sshot_data)
@@ -1090,6 +1134,9 @@ bool gs_frame::event(QEvent* ev)
 		}
 		else
 		{
+			// Notify progress dialog cancellation
+			g_system_progress_canceled = true;
+
 			// Issue async shutdown
 			Emu.GracefulShutdown(true, true);
 

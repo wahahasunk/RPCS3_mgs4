@@ -8,6 +8,7 @@ extern bool g_use_rtm;
 extern u64 g_rtm_tx_limit1;
 
 #ifdef _M_X64
+#ifdef _MSC_VER
 extern "C"
 {
 	u32 _xbegin();
@@ -18,8 +19,6 @@ extern "C"
 
 	uchar _rotl8(uchar, uchar);
 	ushort _rotl16(ushort, uchar);
-	uint _rotl(uint, int);
-	u64 _rotl64(u64, int);
 	u64 __popcnt64(u64);
 
 	s64 __mulh(s64, s64);
@@ -29,6 +28,10 @@ extern "C"
 	u64 _udiv128(u64, u64, u64, u64*);
 	void __debugbreak();
 }
+#include <intrin.h>
+#else
+#include <immintrin.h>
+#endif
 #endif
 
 namespace utils
@@ -47,7 +50,7 @@ namespace utils
 #else
 			status = _xbegin();
 
-			if (status != umax) [[unlikely]]
+			if (status != _XBEGIN_STARTED) [[unlikely]]
 			{
 				goto retry;
 			}
@@ -110,7 +113,7 @@ namespace utils
 		const void* ptr = reinterpret_cast<const void*>(value);
 
 #ifdef _M_X64
-		return _mm_prefetch(static_cast<const char*>(ptr), 2);
+		return _mm_prefetch(static_cast<const char*>(ptr), _MM_HINT_T1);
 #else
 		return __builtin_prefetch(ptr, 0, 2);
 #endif
@@ -125,7 +128,7 @@ namespace utils
 		}
 
 #ifdef _M_X64
-		return _mm_prefetch(static_cast<const char*>(ptr), 3);
+		return _mm_prefetch(static_cast<const char*>(ptr), _MM_HINT_T0);
 #else
 		return __builtin_prefetch(ptr, 0, 3);
 #endif
@@ -138,7 +141,7 @@ namespace utils
 			return;
 		}
 
-#ifdef _M_X64
+#if defined(_M_X64) && !defined(__clang__)
 		return _m_prefetchw(ptr);
 #else
 		return __builtin_prefetch(ptr, 1, 0);
@@ -312,6 +315,14 @@ namespace utils
 		return r;
 	}
 
+#ifdef _MSC_VER
+	inline u128 operator/(u128 lhs, u64 rhs)
+	{
+		u64 rem = 0;
+		return _udiv128(lhs.hi, lhs.lo, rhs, &rem);
+	}
+#endif
+
 	constexpr u32 ctz128(u128 arg)
 	{
 #ifdef _MSC_VER
@@ -364,10 +375,10 @@ namespace utils
 	}
 
 	// Align to power of 2
-	template <typename T, typename = std::enable_if_t<std::is_unsigned_v<T>>>
-	constexpr T align(T value, std::type_identity_t<T> align)
+	template <typename T, typename U, typename = std::enable_if_t<std::is_unsigned_v<T>>>
+	constexpr std::make_unsigned_t<std::common_type_t<T, U>> align(T value, U align)
 	{
-		return static_cast<T>((value + (align - 1)) & (T{0} - align));
+		return static_cast<std::make_unsigned_t<std::common_type_t<T, U>>>((value + (align - 1)) & (T{0} - align));
 	}
 
 	// General purpose aligned division, the result is rounded up not truncated
@@ -389,21 +400,39 @@ namespace utils
 		return static_cast<T>(value / align + (value > 0 ? T{(value % align) > (align / 2)} : 0 - T{(value % align) < (align / 2)}));
 	}
 
-	// Hack. Pointer cast util to workaround UB. Use with extreme care.
-	template <typename T, typename U>
-	[[nodiscard]] T* bless(U* ptr)
+	// Multiplying by ratio, semi-resistant to overflows
+	template <UnsignedInt T>
+	constexpr T rational_mul(T value, std::type_identity_t<T> numerator, std::type_identity_t<T> denominator)
 	{
-#ifdef _MSC_VER
-		return (T*)ptr;
-#elif defined(ARCH_X64)
-		T* result;
-		__asm__("movq %1, %0;" : "=r" (result) : "r" (ptr) : "memory");
-		return result;
-#elif defined(ARCH_ARM64)
-		T* result;
-		__asm__("mov %0, %1" : "=r" (result) : "r" (ptr) : "memory");
-		return result;
-#endif
+		if constexpr (sizeof(T) <= sizeof(u64) / 2)
+		{
+			return static_cast<T>(value * u64{numerator} / u64{denominator});
+		}
+
+		if constexpr (sizeof(T) <= sizeof(u128) / 2)
+		{
+			return static_cast<T>(value * u128{numerator} / u64{denominator});
+		}
+
+		return static_cast<T>(value / denominator * numerator + (value % denominator) * numerator / denominator);
+	}
+
+	template <UnsignedInt T>
+	constexpr T add_saturate(T addend1, T addend2)
+	{
+		return static_cast<T>(~addend1) < addend2 ? T{umax} : static_cast<T>(addend1 + addend2);
+	}
+
+	template <UnsignedInt T>
+	constexpr T sub_saturate(T minuend, T subtrahend)
+	{
+		return minuend < subtrahend ? T{0} : static_cast<T>(minuend - subtrahend);
+	}
+
+	template <UnsignedInt T>
+	constexpr T mul_saturate(T factor1, T factor2)
+	{
+		return factor1 > 0 && T{umax} / factor1 < factor2 ? T{umax} : static_cast<T>(factor1 * factor2);
 	}
 
 	inline void trap()

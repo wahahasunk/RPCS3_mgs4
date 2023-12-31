@@ -1,5 +1,6 @@
 #pragma once
 
+#include "config_mode.h"
 #include "system_config_types.h"
 #include "Utilities/Config.h"
 
@@ -27,7 +28,7 @@ struct cfg_root : cfg::node
 		cfg::string llvm_cpu{ this, "Use LLVM CPU" };
 		cfg::_int<0, 1024> llvm_threads{ this, "Max LLVM Compile Threads", 0 };
 		cfg::_bool ppu_llvm_greedy_mode{ this, "PPU LLVM Greedy Mode", false, false };
-		cfg::_bool ppu_llvm_precompilation{ this, "PPU LLVM Precompilation", true };
+		cfg::_bool llvm_precompilation{ this, "LLVM Precompilation", true };
 		cfg::_enum<thread_scheduler_mode> thread_scheduler{this, "Thread Scheduler Mode", thread_scheduler_mode::os};
 		cfg::_bool set_daz_and_ftz{ this, "Set DAZ and FTZ", false };
 		cfg::_enum<spu_decoder_type> spu_decoder{ this, "SPU Decoder", spu_decoder_type::llvm };
@@ -37,7 +38,7 @@ struct cfg_root : cfg::node
 		cfg::_bool mfc_debug{ this, "MFC Debug" };
 		cfg::_int<0, 6> preferred_spu_threads{ this, "Preferred SPU Threads", 0, true }; // Number of hardware threads dedicated to heavy simultaneous spu tasks
 		cfg::_int<0, 16> spu_delay_penalty{ this, "SPU delay penalty", 3 }; // Number of milliseconds to block a thread if a virtual 'core' isn't free
-		cfg::_bool spu_loop_detection{ this, "SPU loop detection", false, true }; // Try to detect wait loops and trigger thread yield
+		cfg::_bool spu_loop_detection{ this, "SPU loop detection", false }; // Try to detect wait loops and trigger thread yield
 		cfg::_int<0, 6> max_spurs_threads{ this, "Max SPURS Threads", 6 }; // HACK. If less then 6, max number of running SPURS threads in each thread group.
 		cfg::_enum<spu_block_size_type> spu_block_size{ this, "SPU Block Size", spu_block_size_type::safe };
 		cfg::_bool spu_accurate_getllar{ this, "Accurate GETLLAR", false, true };
@@ -71,7 +72,7 @@ struct cfg_root : cfg::node
 		cfg::_bool accurate_FCGT{this, "Accurate FCGT", false}; // Accurate accuracy for only the "FCGT"
 		cfg::_int<-1, 14> ppu_128_reservations_loop_max_length{ this, "Accurate PPU 128-byte Reservation Op Max Length", 0, true }; // -1: Always accurate, 0: Never accurate, 1-14: max accurate loop length
 		cfg::_int<-64, 64> stub_ppu_traps{ this, "Stub PPU Traps", 0, true }; // Hack, skip PPU traps for rare cases where the trap is continueable (specify relative instructions to skip)
-		cfg::_bool full_width_avx512{ this, "Full Width AVX-512", false };
+		cfg::_bool full_width_avx512{ this, "Full Width AVX-512", true };
 		cfg::_bool ppu_llvm_nj_fixup{ this, "PPU LLVM Java Mode Handling", true }; // Partially respect current Java Mode for alti-vec ops by PPU LLVM
 		cfg::_bool use_accurate_dfma{ this, "Use Accurate DFMA", true }; // Enable accurate double-precision FMA for CPUs which do not support it natively
 		cfg::_bool ppu_set_sat_bit{ this, "PPU Set Saturation Bit", false }; // Accuracy. If unset, completely disable saturation flag handling.
@@ -99,6 +100,7 @@ struct cfg_root : cfg::node
 #else
 		cfg::_enum<sleep_timers_accuracy_level> sleep_timers_accuracy{ this, "Sleep Timers Accuracy", sleep_timers_accuracy_level::_usleep, true };
 #endif
+		cfg::_int<-1000, 1500> usleep_addend{ this, "Usleep Time Addend", 0, true };
 
 		cfg::uint64 perf_report_threshold{this, "Performance Report Threshold", 500, true}; // In µs, 0.5ms = default, 0 = everything
 		cfg::_bool perf_report{this, "Enable Performance Report", false, true}; // Show certain perf-related logs
@@ -140,6 +142,7 @@ struct cfg_root : cfg::node
 		cfg::_bool write_depth_buffer{ this, "Write Depth Buffer" };
 		cfg::_bool read_color_buffers{ this, "Read Color Buffers" };
 		cfg::_bool read_depth_buffer{ this, "Read Depth Buffer" };
+		cfg::_bool handle_tiled_memory{ this, "Handle RSX Memory Tiling", false, true };
 		cfg::_bool log_programs{ this, "Log shader programs" };
 		cfg::_bool vsync{ this, "VSync" };
 		cfg::_bool debug_output{ this, "Debug output" };
@@ -167,7 +170,7 @@ struct cfg_root : cfg::node
 		cfg::_bool strict_texture_flushing{ this, "Strict Texture Flushing", false };
 		cfg::_bool multithreaded_rsx{ this, "Multithreaded RSX", false };
 		cfg::_bool relaxed_zcull_sync{ this, "Relaxed ZCULL Sync", false };
-		cfg::_bool enable_3d{ this, "Enable 3D", false };
+		cfg::_enum<stereo_render_mode_options> stereo_render_mode{ this, "3D Display Mode", stereo_render_mode_options::disabled };
 		cfg::_bool debug_program_analyser{ this, "Debug Program Analyser", false };
 		cfg::_bool precise_zpass_count{ this, "Accurate ZCULL stats", true };
 		cfg::_int<1, 8> consecutive_frames_to_draw{ this, "Consecutive Frames To Draw", 1, true};
@@ -184,7 +187,7 @@ struct cfg_root : cfg::node
 		cfg::_bool decr_memory_layout{ this, "DECR memory layout", false}; // Force enable increased allowed main memory range as DECR console
 		cfg::_bool host_label_synchronization{ this, "Allow Host GPU Labels", false };
 		cfg::_bool disable_msl_fast_math{ this, "Disable MSL Fast Math", false };
-		cfg::_enum<output_scaling_mode> output_scaling{ this, "Output Scaling Mode", output_scaling_mode::bilinear };
+		cfg::_enum<output_scaling_mode> output_scaling{ this, "Output Scaling Mode", output_scaling_mode::bilinear, true };
 
 		struct node_vk : cfg::node
 		{
@@ -197,6 +200,7 @@ struct cfg_root : cfg::node
 			cfg::_bool asynchronous_texture_streaming{ this, "Asynchronous Texture Streaming 2", false };
 			cfg::uint<0, 100> rcas_sharpening_intensity{ this, "FidelityFX CAS Sharpening Intensity", 50, true };
 			cfg::_enum<vk_gpu_scheduler_mode> asynchronous_scheduler{ this, "Asynchronous Queue Scheduler", vk_gpu_scheduler_mode::safe };
+			cfg::uint<256, 65536> vram_allocation_limit{ this, "VRAM allocation limit (MB)", 65536, false };
 
 		} vk{ this };
 
@@ -278,9 +282,13 @@ struct cfg_root : cfg::node
 		cfg::_enum<turntable_handler> turntable{this, "Turntable emulated controller", turntable_handler::null};
 		cfg::_enum<ghltar_handler> ghltar{this, "GHLtar emulated controller", ghltar_handler::null};
 		cfg::_enum<pad_handler_mode> pad_mode{this, "Pad handler mode", pad_handler_mode::single_threaded, true};
+		cfg::_bool keep_pads_connected{this, "Keep pads connected", false, true};
 		cfg::uint<0, 100'000> pad_sleep{this, "Pad handler sleep (microseconds)", 1'000, true};
 		cfg::_bool background_input_enabled{this, "Background input enabled", true, true};
 		cfg::_bool show_move_cursor{this, "Show move cursor", false, true};
+		cfg::_bool lock_overlay_input_to_player_one{this, "Lock overlay input to player one", false, true};
+		cfg::string midi_devices{ this, "Emulated Midi devices", "ßßß@@@ßßß@@@ßßß@@@" };
+		cfg::_bool load_sdl_mappings{ this, "Load SDL GameController Mappings", true };
 	} io{ this };
 
 	struct node_sys : cfg::node
@@ -294,6 +302,8 @@ struct cfg_root : cfg::node
 		cfg::_int<-60*60*24*365*100LL, 60*60*24*365*100LL> console_time_offset{ this, "Console time offset (s)", 0 }; // console time offset, limited to +/-100years
 		cfg::uint<0, umax> console_psid_high{this, "PSID high"};
 		cfg::uint<0, umax> console_psid_low{this, "PSID low"};
+		cfg::string hdd_model{this, "HDD Model Name", ""};
+		cfg::string hdd_serial{this, "HDD Serial Number", ""};
 	} sys{ this };
 
 	struct node_net : cfg::node
@@ -316,6 +326,7 @@ struct cfg_root : cfg::node
 
 		cfg::_bool start_paused{ this, "Start Paused", false }; // Pause on first frame
 		cfg::_bool suspend_emu{ this, "Suspend Emulation Savestate Mode", false }; // Close emulation when saving, delete save after loading
+		cfg::_bool compatible_mode{ this, "Compatible Savestate Mode", false }; // SPU emulation optimized for savestate compatibility (off by default for performance reasons)
 		cfg::_bool state_inspection_mode{ this, "Inspection Mode Savestates" }; // Save memory stored in executable files, thus allowing to view state without any files (for debugging)
 		cfg::_bool save_disc_game_data{ this, "Save Disc Game Data", false };
 	} savestate{this};
@@ -326,10 +337,12 @@ struct cfg_root : cfg::node
 
 		cfg::_bool autostart{ this, "Automatically start games after boot", true, true };
 		cfg::_bool autoexit{ this, "Exit RPCS3 when process finishes", false, true };
+		cfg::_bool autopause{ this, "Pause emulation on RPCS3 focus loss", false, true };
 		cfg::_bool start_fullscreen{ this, "Start games in fullscreen mode", false, true };
 		cfg::_bool prevent_display_sleep{ this, "Prevent display sleep while running games", true, true };
 		cfg::_bool show_trophy_popups{ this, "Show trophy popups", true, true };
 		cfg::_bool show_shader_compilation_hint{ this, "Show shader compilation hint", true, true };
+		cfg::_bool show_ppu_compilation_hint{ this, "Show PPU compilation hint", true, true };
 		cfg::_bool use_native_interface{ this, "Use native user interface", true };
 		cfg::string gdb_server{ this, "GDB Server", "127.0.0.1:2345" };
 		cfg::_bool silence_all_logs{ this, "Silence All Logs", false, true };

@@ -395,9 +395,9 @@ namespace
 	std::tuple<VkPipelineLayout, VkDescriptorSetLayout> get_shared_pipeline_layout(VkDevice dev)
 	{
 		const auto& binding_table = vk::get_current_renderer()->get_pipeline_binding_table();
-		std::vector<VkDescriptorSetLayoutBinding> bindings(binding_table.total_descriptor_bindings);
+		rsx::simple_array<VkDescriptorSetLayoutBinding> bindings(binding_table.total_descriptor_bindings);
 
-		usz idx = 0;
+		u32 idx = 0;
 
 		// Vertex stream, one stream for cacheable data, one stream for transient data
 		for (int i = 0; i < 3; i++)
@@ -406,6 +406,7 @@ namespace
 			bindings[idx].descriptorCount = 1;
 			bindings[idx].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 			bindings[idx].binding = binding_table.vertex_buffers_first_bind_slot + i;
+			bindings[idx].pImmutableSamplers = nullptr;
 			idx++;
 		}
 
@@ -413,6 +414,7 @@ namespace
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 		bindings[idx].binding = binding_table.fragment_constant_buffers_bind_slot;
+		bindings[idx].pImmutableSamplers = nullptr;
 
 		idx++;
 
@@ -420,6 +422,7 @@ namespace
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 		bindings[idx].binding = binding_table.fragment_state_bind_slot;
+		bindings[idx].pImmutableSamplers = nullptr;
 
 		idx++;
 
@@ -427,6 +430,7 @@ namespace
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 		bindings[idx].binding = binding_table.fragment_texture_params_bind_slot;
+		bindings[idx].pImmutableSamplers = nullptr;
 
 		idx++;
 
@@ -434,6 +438,7 @@ namespace
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 		bindings[idx].binding = binding_table.vertex_constant_buffers_bind_slot;
+		bindings[idx].pImmutableSamplers = nullptr;
 
 		idx++;
 
@@ -441,6 +446,7 @@ namespace
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS;
 		bindings[idx].binding = binding_table.vertex_params_bind_slot;
+		bindings[idx].pImmutableSamplers = nullptr;
 
 		idx++;
 
@@ -448,6 +454,7 @@ namespace
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 		bindings[idx].binding = binding_table.conditional_render_predicate_slot;
+		bindings[idx].pImmutableSamplers = nullptr;
 
 		idx++;
 
@@ -455,6 +462,7 @@ namespace
 		bindings[idx].descriptorCount = 1;
 		bindings[idx].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 		bindings[idx].binding = binding_table.rasterizer_env_bind_slot;
+		bindings[idx].pImmutableSamplers = nullptr;
 
 		idx++;
 
@@ -466,6 +474,7 @@ namespace
 			bindings[idx].descriptorCount = 1;
 			bindings[idx].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 			bindings[idx].binding = binding;
+			bindings[idx].pImmutableSamplers = nullptr;
 			idx++;
 		}
 
@@ -475,6 +484,7 @@ namespace
 			bindings[idx].descriptorCount = 1;
 			bindings[idx].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 			bindings[idx].binding = binding_table.vertex_textures_first_bind_slot + i;
+			bindings[idx].pImmutableSamplers = nullptr;
 			idx++;
 		}
 
@@ -513,16 +523,17 @@ u64 VKGSRender::get_cycles()
 
 VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 {
-	if (m_instance.create("RPCS3"))
+	// Initialize dependencies
+	g_fxo->need<rsx::dma_manager>();
+
+	if (!m_instance.create("RPCS3"))
 	{
-		m_instance.bind();
-	}
-	else
-	{
-		rsx_log.fatal("Could not find a vulkan compatible GPU driver. Your GPU(s) may not support Vulkan, or you need to install the vulkan runtime and drivers");
+		rsx_log.fatal("Could not find a Vulkan compatible GPU driver. Your GPU(s) may not support Vulkan, or you need to install the Vulkan runtime and drivers");
 		m_device = VK_NULL_HANDLE;
 		return;
 	}
+
+	m_instance.bind();
 
 	std::vector<vk::physical_device>& gpus = m_instance.enumerate_devices();
 
@@ -595,7 +606,7 @@ VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 	m_secondary_cb_list.create(m_secondary_command_buffer_pool, vk::command_buffer::access_type_hint::all);
 
 	//Precalculated stuff
-	std::tie(pipeline_layout, descriptor_layouts) = get_shared_pipeline_layout(*m_device);
+	std::tie(m_pipeline_layout, m_descriptor_layouts) = get_shared_pipeline_layout(*m_device);
 
 	//Occlusion
 	m_occlusion_query_manager = std::make_unique<vk::query_pool_manager>(*m_device, VK_QUERY_TYPE_OCCLUSION, OCCLUSION_MAX_POOL_SIZE);
@@ -614,13 +625,16 @@ VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 	const auto& binding_table = m_device->get_pipeline_binding_table();
 	const u32 num_fs_samplers = binding_table.vertex_textures_first_bind_slot - binding_table.textures_first_bind_slot;
 
-	std::vector<VkDescriptorPoolSize> sizes;
-	sizes.push_back({ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER , 6 * max_draw_calls });
-	sizes.push_back({ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER , 3 * max_draw_calls });
-	sizes.push_back({ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER , (num_fs_samplers + 4) * max_draw_calls });
+	rsx::simple_array<VkDescriptorPoolSize> descriptor_type_sizes =
+	{
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER , 6 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER , 3 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER , (num_fs_samplers + 4) },
 
-	// Conditional rendering predicate slot; refactor to allow skipping this when not needed
-	sizes.push_back({ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 * max_draw_calls });
+		// Conditional rendering predicate slot; refactor to allow skipping this when not needed
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 }
+	};
+	m_descriptor_pool.create(*m_device, descriptor_type_sizes, max_draw_calls);
 
 	VkSemaphoreCreateInfo semaphore_info = {};
 	semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -665,7 +679,6 @@ VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 	{
 		vkCreateSemaphore((*m_device), &semaphore_info, nullptr, &ctx.present_wait_semaphore);
 		vkCreateSemaphore((*m_device), &semaphore_info, nullptr, &ctx.acquire_signal_semaphore);
-		ctx.descriptor_pool.create(*m_device, sizes.data(), static_cast<u32>(sizes.size()), max_draw_calls, 1);
 	}
 
 	const auto& memory_map = m_device->get_memory_mapping();
@@ -684,7 +697,7 @@ VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 		}
 	);
 
-	if (g_cfg.video.disable_vertex_cache || g_cfg.video.multithreaded_rsx)
+	if (g_cfg.video.disable_vertex_cache)
 		m_vertex_cache = std::make_unique<vk::null_vertex_cache>();
 	else
 		m_vertex_cache = std::make_unique<vk::weak_vertex_cache>();
@@ -738,7 +751,9 @@ VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 	backend_config.supports_hw_renormalization = (vk::get_driver_vendor() == vk::driver_vendor::NVIDIA);
 
 	// Conditional rendering support
-	backend_config.supports_hw_conditional_render = true;
+	// Do not use on MVK due to a speedhack we rely on (streaming results without stopping the current renderpass)
+	// If we break the renderpasses, MVK loses around 75% of its performance in troublesome spots compared to just doing a CPU sync
+	backend_config.supports_hw_conditional_render = (vk::get_driver_vendor() != vk::driver_vendor::MVK);
 
 	// Passthrough DMA
 	backend_config.supports_passthrough_dma = m_device->get_external_memory_host_support();
@@ -785,7 +800,7 @@ VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 #endif
 		if (backend_config.supports_passthrough_dma)
 		{
-			rsx_log.error("AMDGPU kernel driver on linux and INTEL driver on some platforms cannot support passthrough DMA buffers.");
+			rsx_log.error("AMDGPU kernel driver on Linux and INTEL driver on some platforms cannot support passthrough DMA buffers.");
 			backend_config.supports_passthrough_dma = false;
 		}
 		break;
@@ -808,8 +823,25 @@ VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 
 	if (backend_config.supports_asynchronous_compute)
 	{
+		m_async_compute_memory_barrier =
+		{
+			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2_KHR,
+			.pNext = nullptr,
+			.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR,
+			.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR,
+			.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT_KHR,
+			.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT_KHR
+		};
+
+		m_async_compute_dependency_info =
+		{
+			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR,
+			.memoryBarrierCount = 1,
+			.pMemoryBarriers = &m_async_compute_memory_barrier
+		};
+
 		// Run only if async compute can be used.
-		g_fxo->init<vk::AsyncTaskScheduler>(g_cfg.video.vk.asynchronous_scheduler);
+		g_fxo->init<vk::AsyncTaskScheduler>(g_cfg.video.vk.asynchronous_scheduler, m_async_compute_dependency_info);
 	}
 
 	if (backend_config.supports_host_gpu_labels)
@@ -860,10 +892,13 @@ VKGSRender::~VKGSRender()
 	vkDeviceWaitIdle(*m_device);
 
 	// Globals. TODO: Refactor lifetime management
-	if (backend_config.supports_asynchronous_compute)
+	if (auto async_scheduler = g_fxo->try_get<vk::AsyncTaskScheduler>())
 	{
-		g_fxo->get<vk::AsyncTaskScheduler>().destroy();
+		async_scheduler->destroy();
 	}
+
+	// GC cleanup
+	vk::get_resource_manager()->flush();
 
 	// Host data
 	if (m_host_object_data)
@@ -921,7 +956,6 @@ VKGSRender::~VKGSRender()
 	{
 		vkDestroySemaphore((*m_device), ctx.present_wait_semaphore, nullptr);
 		vkDestroySemaphore((*m_device), ctx.acquire_signal_semaphore, nullptr);
-		ctx.descriptor_pool.destroy();
 
 		ctx.buffer_views_to_clean.clear();
 	}
@@ -932,12 +966,11 @@ VKGSRender::~VKGSRender()
 
 	m_stencil_mirror_sampler.reset();
 
-	// Overlay text handler
-	m_text_writer.reset();
+	// Pipeline descriptors
+	m_descriptor_pool.destroy();
 
-	//Pipeline descriptors
-	vkDestroyPipelineLayout(*m_device, pipeline_layout, nullptr);
-	vkDestroyDescriptorSetLayout(*m_device, descriptor_layouts, nullptr);
+	vkDestroyPipelineLayout(*m_device, m_pipeline_layout, nullptr);
+	vkDestroyDescriptorSetLayout(*m_device, m_descriptor_layouts, nullptr);
 
 	// Queries
 	m_occlusion_query_manager.reset();
@@ -1086,28 +1119,35 @@ bool VKGSRender::on_vram_exhausted(rsx::problem_severity severity)
 	ensure(!vk::is_uninterruptible() && rsx::get_current_renderer()->is_current_thread());
 
 	bool texture_cache_relieved = false;
-	if (severity >= rsx::problem_severity::fatal && m_texture_cache.is_overallocated())
+	if (severity >= rsx::problem_severity::fatal)
 	{
-		// Evict some unused textures. Do not evict any active references
-		std::set<u32> exclusion_list;
-		auto scan_array = [&](const auto& texture_array)
+		// Hard sync before trying to evict anything. This guarantees no UAF crashes in the driver.
+		// As a bonus, we also get a free gc pass
+		flush_command_queue(true, true);
+
+		if (m_texture_cache.is_overallocated())
 		{
-			for (auto i = 0ull; i < texture_array.size(); ++i)
+			// Evict some unused textures. Do not evict any active references
+			std::set<u32> exclusion_list;
+			auto scan_array = [&](const auto& texture_array)
 			{
-				const auto& tex = texture_array[i];
-				const auto addr = rsx::get_address(tex.offset(), tex.location());
-				exclusion_list.insert(addr);
-			}
-		};
+				for (auto i = 0ull; i < texture_array.size(); ++i)
+				{
+					const auto& tex = texture_array[i];
+					const auto addr = rsx::get_address(tex.offset(), tex.location());
+					exclusion_list.insert(addr);
+				}
+			};
 
-		scan_array(rsx::method_registers.fragment_textures);
-		scan_array(rsx::method_registers.vertex_textures);
+			scan_array(rsx::method_registers.fragment_textures);
+			scan_array(rsx::method_registers.vertex_textures);
 
-		// Hold the secondary lock guard to prevent threads from trying to touch access violation handler stuff
-		std::lock_guard lock(m_secondary_cb_guard);
+			// Hold the secondary lock guard to prevent threads from trying to touch access violation handler stuff
+			std::lock_guard lock(m_secondary_cb_guard);
 
-		rsx_log.warning("Texture cache is overallocated. Will evict unnecessary textures.");
-		texture_cache_relieved = m_texture_cache.evict_unused(exclusion_list);
+			rsx_log.warning("Texture cache is overallocated. Will evict unnecessary textures.");
+			texture_cache_relieved = m_texture_cache.evict_unused(exclusion_list);
+		}
 	}
 
 	texture_cache_relieved |= m_texture_cache.handle_memory_pressure(severity);
@@ -1118,58 +1158,79 @@ bool VKGSRender::on_vram_exhausted(rsx::problem_severity severity)
 	}
 
 	bool surface_cache_relieved = false;
-	if (severity >= rsx::problem_severity::moderate)
+	const auto mem_info = m_device->get_memory_mapping();
+
+	// Check if we need to spill
+	if (severity >= rsx::problem_severity::fatal &&                // Only spill for fatal errors
+		mem_info.device_local != mem_info.host_visible_coherent && // Do not spill if it is an IGP, there is nowhere to spill to
+		m_rtts.is_overallocated())                                 // Surface cache must be over-allocated by the design quota
 	{
-		// Check if we need to spill
-		const auto mem_info = m_device->get_memory_mapping();
-		if (severity >= rsx::problem_severity::fatal &&                // Only spill for fatal errors
-			mem_info.device_local != mem_info.host_visible_coherent && // Do not spill if it is an IGP, there is nowhere to spill to
-			m_rtts.is_overallocated())                                 // Surface cache must be over-allocated by the design quota
-		{
-			// Queue a VRAM spill operation.
-			m_rtts.spill_unused_memory();
-		}
+		// Queue a VRAM spill operation.
+		m_rtts.spill_unused_memory();
+	}
 
-		// Moderate severity and higher also starts removing stale render target objects
-		if (m_rtts.handle_memory_pressure(*m_current_command_buffer, severity))
-		{
-			surface_cache_relieved = true;
-			m_rtts.free_invalidated(*m_current_command_buffer, severity);
-		}
-
-		if (severity >= rsx::problem_severity::fatal && surface_cache_relieved && !m_samplers_dirty)
-		{
-			// If surface cache was modified destructively, then we must reload samplers touching the surface cache.
-			bool invalidate_samplers = false;
-			auto scan_array = [&](const auto& texture_array, const auto& sampler_states)
-			{
-				for (auto i = 0ull; i < texture_array.size() && !invalidate_samplers; ++i)
-				{
-					if (texture_array[i].enabled() && sampler_states[i])
-					{
-						invalidate_samplers = (sampler_states[i]->upload_context == rsx::texture_upload_context::framebuffer_storage);
-					}
-				}
-			};
-
-			scan_array(rsx::method_registers.fragment_textures, fs_sampler_state);
-			scan_array(rsx::method_registers.vertex_textures, vs_sampler_state);
-
-			if (invalidate_samplers)
-			{
-				m_samplers_dirty.store(true);
-			}
-		}
+	// Moderate severity and higher also starts removing stale render target objects
+	if (m_rtts.handle_memory_pressure(*m_current_command_buffer, severity))
+	{
+		surface_cache_relieved = true;
+		m_rtts.trim(*m_current_command_buffer, severity);
 	}
 
 	const bool any_cache_relieved = (texture_cache_relieved || surface_cache_relieved);
-	if (any_cache_relieved && severity >= rsx::problem_severity::fatal)
+	if (severity < rsx::problem_severity::fatal)
 	{
-		// Imminent crash, full GPU sync is the least of our problems
-		flush_command_queue(true, true);
+		return any_cache_relieved;
 	}
 
+	if (surface_cache_relieved && !m_samplers_dirty)
+	{
+		// If surface cache was modified destructively, then we must reload samplers touching the surface cache.
+		bool invalidate_samplers = false;
+		auto scan_array = [&](const auto& texture_array, const auto& sampler_states)
+		{
+			if (invalidate_samplers)
+			{
+				return;
+			}
+
+			for (auto i = 0ull; i < texture_array.size(); ++i)
+			{
+				if (texture_array[i].enabled() &&
+					sampler_states[i] &&
+					sampler_states[i]->upload_context == rsx::texture_upload_context::framebuffer_storage)
+				{
+					invalidate_samplers = true;
+					break;
+				}
+			}
+		};
+
+		scan_array(rsx::method_registers.fragment_textures, fs_sampler_state);
+		scan_array(rsx::method_registers.vertex_textures, vs_sampler_state);
+
+		if (invalidate_samplers)
+		{
+			m_samplers_dirty.store(true);
+		}
+	}
+
+	// Imminent crash, full GPU sync is the least of our problems
+	flush_command_queue(true, true);
+
 	return any_cache_relieved;
+}
+
+void VKGSRender::on_descriptor_pool_fragmentation(bool is_fatal)
+{
+	if (!is_fatal)
+	{
+		// It is very likely that the release is simply in progress (enqueued)
+		m_primary_cb_list.wait_all();
+		return;
+	}
+
+	// Just flush everything. Unless the hardware is very deficient, this should happen very rarely.
+	flush_command_queue(true, true);
 }
 
 void VKGSRender::notify_tile_unbound(u32 tile)
@@ -1306,25 +1367,11 @@ void VKGSRender::check_present_status()
 	}
 }
 
-void VKGSRender::check_descriptors()
-{
-	// Ease resource pressure if the number of draw calls becomes too high or we are running low on memory resources
-	const auto required_descriptors = rsx::method_registers.current_draw_clause.pass_count();
-	if (!m_current_frame->descriptor_pool.can_allocate(required_descriptors, m_current_frame->used_descriptors))
-	{
-		// Should hard sync before resetting descriptors for spec compliance
-		flush_command_queue(true);
-
-		m_current_frame->descriptor_pool.reset(0);
-		m_current_frame->used_descriptors = 0;
-	}
-}
-
 VkDescriptorSet VKGSRender::allocate_descriptor_set()
 {
 	if (!m_shader_interpreter.is_interpreter(m_program)) [[likely]]
 	{
-		return m_current_frame->descriptor_pool.allocate(descriptor_layouts, VK_TRUE, m_current_frame->used_descriptors++);
+		return m_descriptor_pool.allocate(m_descriptor_layouts, VK_TRUE);
 	}
 	else
 	{
@@ -1396,7 +1443,7 @@ void VKGSRender::on_init_thread()
 {
 	if (m_device == VK_NULL_HANDLE)
 	{
-		fmt::throw_exception("No vulkan device was created");
+		fmt::throw_exception("No Vulkan device was created");
 	}
 
 	GSRender::on_init_thread();
@@ -1405,7 +1452,7 @@ void VKGSRender::on_init_thread()
 	if (!m_overlay_manager)
 	{
 		m_frame->hide();
-		m_shaders_cache->load(nullptr, pipeline_layout);
+		m_shaders_cache->load(nullptr, m_pipeline_layout);
 		m_frame->show();
 	}
 	else
@@ -1413,7 +1460,7 @@ void VKGSRender::on_init_thread()
 		rsx::shader_loading_dialog_native dlg(this);
 
 		// TODO: Handle window resize messages during loading on GPUs without OUT_OF_DATE_KHR support
-		m_shaders_cache->load(&dlg, pipeline_layout);
+		m_shaders_cache->load(&dlg, m_pipeline_layout);
 	}
 }
 
@@ -2000,7 +2047,7 @@ bool VKGSRender::load_program()
 
 		// Load current program from cache
 		std::tie(m_program, m_vertex_prog, m_fragment_prog) = m_prog_buffer->get_graphics_pipeline(vertex_program, fragment_program, m_pipeline_properties,
-			shadermode != shader_mode::recompiler, true, pipeline_layout);
+			shadermode != shader_mode::recompiler, true, m_pipeline_layout);
 
 		vk::leave_uninterruptible();
 
@@ -2130,12 +2177,12 @@ void VKGSRender::load_program_env()
 	{
 		check_heap_status(VK_HEAP_CHECK_TEXTURE_ENV_STORAGE);
 
-		auto mem = m_fragment_texture_params_ring_info.alloc<256>(512);
-		auto buf = m_fragment_texture_params_ring_info.map(mem, 512);
+		auto mem = m_fragment_texture_params_ring_info.alloc<256>(768);
+		auto buf = m_fragment_texture_params_ring_info.map(mem, 768);
 
 		current_fragment_program.texture_params.write_to(buf, current_fp_metadata.referenced_textures_mask);
 		m_fragment_texture_params_ring_info.unmap();
-		m_fragment_texture_params_buffer_info = { m_fragment_texture_params_ring_info.heap->value, mem, 512 };
+		m_fragment_texture_params_buffer_info = { m_fragment_texture_params_ring_info.heap->value, mem, 768 };
 	}
 
 	if (update_raster_env)
@@ -2259,7 +2306,7 @@ void VKGSRender::update_vertex_env(u32 id, const vk::vertex_upload_info& vertex_
 		data_size = 20;
 	}
 
-	vkCmdPushConstants(*m_current_command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, data_size, draw_info);
+	vkCmdPushConstants(*m_current_command_buffer, m_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, data_size, draw_info);
 
 	const usz data_offset = (id * 128) + m_vertex_layout_stream_info.offset;
 	auto dst = m_vertex_layout_ring_info.map(data_offset, 128);
@@ -2366,12 +2413,12 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 		primary_submit_info.wait_on(wait_semaphore, pipeline_stage_flags);
 	}
 
-	auto& async_scheduler = g_fxo->get<vk::AsyncTaskScheduler>();
-	if (async_scheduler.is_recording())
+	if (auto async_scheduler = g_fxo->try_get<vk::AsyncTaskScheduler>();
+		async_scheduler && async_scheduler->is_recording())
 	{
-		if (async_scheduler.is_host_mode())
+		if (async_scheduler->is_host_mode())
 		{
-			const VkSemaphore async_sema = *async_scheduler.get_sema();
+			const VkSemaphore async_sema = *async_scheduler->get_sema();
 			secondary_submit_info.queue_signal(async_sema);
 			primary_submit_info.wait_on(async_sema, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 
@@ -2379,7 +2426,7 @@ void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore 
 			vk::get_resource_manager()->push_down_current_scope();
 		}
 
-		async_scheduler.flush(secondary_submit_info, force_flush);
+		async_scheduler->flush(secondary_submit_info, force_flush);
 	}
 
 	if (signal_semaphore)
@@ -2648,7 +2695,7 @@ void VKGSRender::renderctl(u32 request_code, void* args)
 	}
 }
 
-bool VKGSRender::scaled_image_from_memory(rsx::blit_src_info& src, rsx::blit_dst_info& dst, bool interpolate)
+bool VKGSRender::scaled_image_from_memory(const rsx::blit_src_info& src, const rsx::blit_dst_info& dst, bool interpolate)
 {
 	if (swapchain_unavailable)
 		return false;
@@ -2866,7 +2913,7 @@ void VKGSRender::begin_conditional_rendering(const std::vector<rsx::reports::occ
 			if (!query_info.indices.empty())
 			{
 				const auto& index = query_info.indices.front();
-				m_occlusion_query_manager->get_query_result_indirect(*m_current_command_buffer, index, m_cond_render_buffer->value, 0);
+				m_occlusion_query_manager->get_query_result_indirect(*m_current_command_buffer, index, 1, m_cond_render_buffer->value, 0);
 
 				vk::insert_buffer_memory_barrier(*m_current_command_buffer, m_cond_render_buffer->value, 0, 4,
 					VK_PIPELINE_STAGE_TRANSFER_BIT, dst_stage,
@@ -2884,14 +2931,56 @@ void VKGSRender::begin_conditional_rendering(const std::vector<rsx::reports::occ
 	{
 		// We'll need to do some result aggregation using a compute shader.
 		auto scratch = vk::get_scratch_buffer(*m_current_command_buffer, num_hw_queries * 4);
+
+		// Range latching. Because of how the query pool manages allocations using a stack, we get an inverse sequential set of handles/indices that we can easily group together.
+		// This drastically boosts performance on some drivers like the NVIDIA proprietary one that seems to have a rather high cost for every individual query transer command.
+		struct { u32 first, last; } query_range = { umax, 0 };
+
+		auto copy_query_range_impl = [&]()
+		{
+			const auto count = (query_range.last - query_range.first + 1);
+			m_occlusion_query_manager->get_query_result_indirect(*m_current_command_buffer, query_range.first, count, scratch->value, dst_offset);
+			dst_offset += count * 4;
+		};
+
 		for (usz i = first; i < last; ++i)
 		{
 			auto& query_info = m_occlusion_map[sources[i]->driver_handle];
 			for (const auto& index : query_info.indices)
 			{
-				m_occlusion_query_manager->get_query_result_indirect(*m_current_command_buffer, index, scratch->value, dst_offset);
-				dst_offset += 4;
+				// First iteration?
+				if (query_range.first == umax)
+				{
+					query_range = { index, index };
+					continue;
+				}
+
+				// Head?
+				if ((query_range.first - 1) == index)
+				{
+					query_range.first = index;
+					continue;
+				}
+
+				// Tail?
+				if ((query_range.last + 1) == index)
+				{
+					query_range.last = index;
+					continue;
+				}
+
+				// Flush pending queue. In practice, this is never reached and we fall out to the spill block outside the loops
+				copy_query_range_impl();
+
+				// Start a new range for the current index
+				query_range = { index, index };
 			}
+		}
+
+		if (query_range.first != umax)
+		{
+			// Dangling queries, flush
+			copy_query_range_impl();
 		}
 
 		// Sanity check
@@ -2923,7 +3012,7 @@ void VKGSRender::begin_conditional_rendering(const std::vector<rsx::reports::occ
 	else if (m_program)
 	{
 		// This can sometimes happen when shaders are compiling, only log if there is a program hit
-		rsx_log.warning("Dubious query data pushed to cond render!, Please report to developers(q.pending=%d)", sources.front()->pending);
+		rsx_log.warning("Dubious query data pushed to cond render! Please report to developers(q.pending=%d)", sources.front()->pending);
 	}
 
 	rsx::thread::begin_conditional_rendering(sources);

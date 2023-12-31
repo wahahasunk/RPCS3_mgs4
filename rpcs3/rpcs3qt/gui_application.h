@@ -7,8 +7,11 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QTranslator>
+#include <QSoundEffect>
 
 #include "main_application.h"
+
+#include "Emu/System.h"
 
 #include <memory>
 #include <functional>
@@ -85,9 +88,13 @@ private:
 	QTimer m_timer;
 	QElapsedTimer m_timer_playtime;
 
+	QSoundEffect m_sound_effect{};
+
 	std::shared_ptr<emu_settings> m_emu_settings;
 	std::shared_ptr<gui_settings> m_gui_settings;
 	std::shared_ptr<persistent_settings> m_persistent_settings;
+
+	QString m_default_style;
 
 	bool m_show_gui = true;
 	bool m_use_cli_style = false;
@@ -95,8 +102,14 @@ private:
 	bool m_start_games_fullscreen = false;
 	int m_game_screen_index = -1;
 
+	u64 m_pause_amend_time_on_focus_loss = umax;
+	u64 m_pause_delayed_tag = 0;
+	typename Emulator::stop_counter_t m_emu_focus_out_emulation_id{};
+	bool m_is_pause_on_focus_loss_active = false;
+
 private Q_SLOTS:
 	void OnChangeStyleSheetRequest();
+	void OnAppStateChanged(Qt::ApplicationState state);
 
 Q_SIGNALS:
 	void OnEmulatorRun(bool start_playtime);
@@ -107,8 +120,8 @@ Q_SIGNALS:
 	void OnEnableDiscEject(bool enabled);
 	void OnEnableDiscInsert(bool enabled);
 
-	void RequestCallFromMainThread(std::function<void()> func, atomic_t<bool>* wake_up);
+	void RequestCallFromMainThread(std::function<void()> func, atomic_t<u32>* wake_up);
 
 private Q_SLOTS:
-	static void CallFromMainThread(const std::function<void()>& func, atomic_t<bool>* wake_up);
+	static void CallFromMainThread(const std::function<void()>& func, atomic_t<u32>* wake_up);
 };

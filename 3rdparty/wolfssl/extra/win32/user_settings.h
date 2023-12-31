@@ -7,6 +7,7 @@
 #endif
 
 /* Configurations */
+#define WOLFSSL_SYS_CA_CERTS
 #define WOLFSSL_DES_ECB
 #define HAVE_FFDHE_2048
 #define TFM_TIMING_RESISTANT
@@ -24,9 +25,13 @@
 #define HAVE_ONE_TIME_AUTH
 #define HAVE_CHACHA
 #define HAVE_HASHDRBG
+#ifndef HAVE_SNI
 #define HAVE_SNI
+#endif
 #define HAVE_ENCRYPT_THEN_MAC
+#ifndef NO_MD4
 #define NO_MD4
+#endif
 #define WC_NO_ASYNC_THREADING
 #define WC_NO_HARDEN
 #define HAVE_WRITE_DUP
@@ -37,6 +42,7 @@
 #define NO_PSK
 #define HAVE_EXTENDED_MASTER
 #define WOLFSSL_SNIFFER
+#define WOLFSSL_IGNORE_FILE_WARN
 #define HAVE_AESGCM
 #define HAVE_SUPPORTED_CURVES
 #define HAVE_TLS_EXTENSIONS
@@ -63,10 +69,15 @@ extern FILE* wolfSSL_fopen_utf8(const char* name, const char* mode);
 #define XFWRITE    fwrite
 #define XFCLOSE    fclose
 #define XSEEK_END  SEEK_END
+#define XSEEK_SET  SEEK_SET
 #define XBADFILE   NULL
 #define XFGETS     fgets
 #define XFPRINTF   fprintf
 #define XFFLUSH    fflush
+
+/* For some reason we need to define ssize_t */
+#define HAVE_SSIZE_T
+#define ssize_t __int64
 
 #include <sys/stat.h>
 extern int wolfSSL_stat_utf8(const char* path, struct _stat* buffer);

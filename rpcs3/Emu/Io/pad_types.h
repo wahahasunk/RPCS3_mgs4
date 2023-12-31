@@ -4,7 +4,57 @@
 #include "util/endian.hpp"
 #include "Emu/Io/pad_config_types.h"
 
+#include <map>
+#include <set>
 #include <vector>
+
+enum class pad_button : u8
+{
+	dpad_up = 0,
+	dpad_down,
+	dpad_left,
+	dpad_right,
+	select,
+	start,
+	ps,
+	triangle,
+	circle,
+	square,
+	cross,
+	L1,
+	R1,
+	L2,
+	R2,
+	L3,
+	R3,
+
+	ls_up,
+	ls_down,
+	ls_left,
+	ls_right,
+	ls_x,
+	ls_y,
+	rs_up,
+	rs_down,
+	rs_left,
+	rs_right,
+	rs_x,
+	rs_y,
+
+	pad_button_max_enum
+};
+
+u32 pad_button_offset(pad_button button);
+u32 pad_button_keycode(pad_button button);
+
+enum class axis_direction : u8
+{
+	both = 0,
+	negative,
+	positive
+};
+
+u32 get_axis_keycode(u32 offset, u16 value);
 
 enum SystemInfo
 {
@@ -74,6 +124,93 @@ enum DeviceType
 	CELL_PAD_DEV_TYPE_LDD = 5,
 };
 
+// Controller types
+enum
+{
+	CELL_PAD_PCLASS_TYPE_STANDARD   = 0x00,
+	CELL_PAD_PCLASS_TYPE_GUITAR     = 0x01,
+	CELL_PAD_PCLASS_TYPE_DRUM       = 0x02,
+	CELL_PAD_PCLASS_TYPE_DJ         = 0x03,
+	CELL_PAD_PCLASS_TYPE_DANCEMAT   = 0x04,
+	CELL_PAD_PCLASS_TYPE_NAVIGATION = 0x05,
+	CELL_PAD_PCLASS_TYPE_SKATEBOARD = 0x8001,
+};
+
+// Profile of a Standard Type Controller
+// Profile of a Navigation Type Controller
+// Bits 0 – 31 All 0s
+
+// Profile of a Guitar Type Controller
+enum
+{
+	// Basic
+	CELL_PAD_PCLASS_PROFILE_GUITAR_FRET_1       = 0x00000001,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_FRET_2       = 0x00000002,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_FRET_3       = 0x00000004,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_FRET_4       = 0x00000008,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_FRET_5       = 0x00000010,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_STRUM_UP     = 0x00000020,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_STRUM_DOWN   = 0x00000040,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_WHAMMYBAR    = 0x00000080,
+	// All Basic                                = 0x000000FF
+
+	// Optional
+	CELL_PAD_PCLASS_PROFILE_GUITAR_FRET_H1      = 0x00000100,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_FRET_H2      = 0x00000200,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_FRET_H3      = 0x00000400,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_FRET_H4      = 0x00000800,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_FRET_H5      = 0x00001000,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_5WAY_EFFECT  = 0x00002000,
+	CELL_PAD_PCLASS_PROFILE_GUITAR_TILT_SENS    = 0x00004000,
+	// All                                      = 0x00007FFF
+};
+
+// Profile of a Drum Type Controller
+enum
+{
+	CELL_PAD_PCLASS_PROFILE_DRUM_SNARE     = 0x00000001,
+	CELL_PAD_PCLASS_PROFILE_DRUM_TOM       = 0x00000002,
+	CELL_PAD_PCLASS_PROFILE_DRUM_TOM2      = 0x00000004,
+	CELL_PAD_PCLASS_PROFILE_DRUM_TOM_FLOOR = 0x00000008,
+	CELL_PAD_PCLASS_PROFILE_DRUM_KICK      = 0x00000010,
+	CELL_PAD_PCLASS_PROFILE_DRUM_CYM_HiHAT = 0x00000020,
+	CELL_PAD_PCLASS_PROFILE_DRUM_CYM_CRASH = 0x00000040,
+	CELL_PAD_PCLASS_PROFILE_DRUM_CYM_RIDE  = 0x00000080,
+	CELL_PAD_PCLASS_PROFILE_DRUM_KICK2     = 0x00000100,
+	// All                                 = 0x000001FF
+};
+
+// Profile of a DJ Deck Type Controller
+enum
+{
+	CELL_PAD_PCLASS_PROFILE_DJ_MIXER_ATTACK     = 0x00000001,
+	CELL_PAD_PCLASS_PROFILE_DJ_MIXER_CROSSFADER = 0x00000002,
+	CELL_PAD_PCLASS_PROFILE_DJ_MIXER_DSP_DIAL   = 0x00000004,
+	CELL_PAD_PCLASS_PROFILE_DJ_DECK1_STREAM1    = 0x00000008,
+	CELL_PAD_PCLASS_PROFILE_DJ_DECK1_STREAM2    = 0x00000010,
+	CELL_PAD_PCLASS_PROFILE_DJ_DECK1_STREAM3    = 0x00000020,
+	CELL_PAD_PCLASS_PROFILE_DJ_DECK1_PLATTER    = 0x00000040,
+	CELL_PAD_PCLASS_PROFILE_DJ_DECK2_STREAM1    = 0x00000080,
+	CELL_PAD_PCLASS_PROFILE_DJ_DECK2_STREAM2    = 0x00000100,
+	CELL_PAD_PCLASS_PROFILE_DJ_DECK2_STREAM3    = 0x00000200,
+	CELL_PAD_PCLASS_PROFILE_DJ_DECK2_PLATTER    = 0x00000400,
+	// All                                      = 0x000007FF
+};
+
+// Profile of a Dance Mat Type Controller
+enum
+{
+	CELL_PAD_PCLASS_PROFILE_DANCEMAT_CIRCLE   = 0x00000001,
+	CELL_PAD_PCLASS_PROFILE_DANCEMAT_CROSS    = 0x00000002,
+	CELL_PAD_PCLASS_PROFILE_DANCEMAT_TRIANGLE = 0x00000004,
+	CELL_PAD_PCLASS_PROFILE_DANCEMAT_SQUARE   = 0x00000008,
+	CELL_PAD_PCLASS_PROFILE_DANCEMAT_RIGHT    = 0x00000010,
+	CELL_PAD_PCLASS_PROFILE_DANCEMAT_LEFT     = 0x00000020,
+	CELL_PAD_PCLASS_PROFILE_DANCEMAT_UP       = 0x00000040,
+	CELL_PAD_PCLASS_PROFILE_DANCEMAT_DOWN     = 0x00000080,
+	// All                                    = 0x000000FF
+};
+
 enum ButtonDataOffset
 {
 	CELL_PAD_BTN_OFFSET_DIGITAL1 = 2,
@@ -98,6 +235,9 @@ enum ButtonDataOffset
 	CELL_PAD_BTN_OFFSET_SENSOR_Y = 21,
 	CELL_PAD_BTN_OFFSET_SENSOR_Z = 22,
 	CELL_PAD_BTN_OFFSET_SENSOR_G = 23,
+
+	// Fake helpers
+	CELL_PAD_BTN_OFFSET_PRESS_PIGGYBACK,
 };
 
 enum CellPadPeriphGuitarBtnDataOffset
@@ -182,6 +322,23 @@ static constexpr u16 DEFAULT_MOTION_Y = 399;
 static constexpr u16 DEFAULT_MOTION_Z = 512;
 static constexpr u16 DEFAULT_MOTION_G = 512;
 
+// Fake helper enum
+enum PressurePiggybackFlags : u32
+{
+	CELL_PAD_CTRL_PRESS_RIGHT    = CELL_PAD_BTN_OFFSET_PRESS_RIGHT,
+	CELL_PAD_CTRL_PRESS_LEFT     = CELL_PAD_BTN_OFFSET_PRESS_LEFT,
+	CELL_PAD_CTRL_PRESS_UP       = CELL_PAD_BTN_OFFSET_PRESS_UP,
+	CELL_PAD_CTRL_PRESS_DOWN     = CELL_PAD_BTN_OFFSET_PRESS_DOWN,
+	CELL_PAD_CTRL_PRESS_TRIANGLE = CELL_PAD_BTN_OFFSET_PRESS_TRIANGLE,
+	CELL_PAD_CTRL_PRESS_CIRCLE   = CELL_PAD_BTN_OFFSET_PRESS_CIRCLE,
+	CELL_PAD_CTRL_PRESS_CROSS    = CELL_PAD_BTN_OFFSET_PRESS_CROSS,
+	CELL_PAD_CTRL_PRESS_SQUARE   = CELL_PAD_BTN_OFFSET_PRESS_SQUARE,
+	CELL_PAD_CTRL_PRESS_L1       = CELL_PAD_BTN_OFFSET_PRESS_L1,
+	CELL_PAD_CTRL_PRESS_R1       = CELL_PAD_BTN_OFFSET_PRESS_R1,
+	CELL_PAD_CTRL_PRESS_L2       = CELL_PAD_BTN_OFFSET_PRESS_L2,
+	CELL_PAD_CTRL_PRESS_R2       = CELL_PAD_BTN_OFFSET_PRESS_R2,
+};
+
 constexpr u32 special_button_offset = 666; // Must not conflict with other CELL offsets like ButtonDataOffset
 
 enum special_button_value
@@ -192,18 +349,19 @@ enum special_button_value
 struct Button
 {
 	u32 m_offset = 0;
-	u32 m_keyCode = 0;
+	std::set<u32> m_key_codes{};
 	u32 m_outKeyCode = 0;
 	u16 m_value    = 0;
 	bool m_pressed = false;
 
-	u16 m_actual_value = 0;     // only used in keyboard_pad_handler
-	bool m_analog      = false; // only used in keyboard_pad_handler
-	bool m_trigger     = false; // only used in keyboard_pad_handler
+	u16 m_actual_value = 0;              // only used in keyboard_pad_handler
+	bool m_analog      = false;          // only used in keyboard_pad_handler
+	bool m_trigger     = false;          // only used in keyboard_pad_handler
+	std::map<u32, u16> m_pressed_keys{}; // only used in keyboard_pad_handler
 
-	Button(u32 offset, u32 keyCode, u32 outKeyCode)
+	Button(u32 offset, std::set<u32> key_codes, u32 outKeyCode)
 		: m_offset(offset)
-		, m_keyCode(keyCode)
+		, m_key_codes(std::move(key_codes))
 		, m_outKeyCode(outKeyCode)
 	{
 		if (offset == CELL_PAD_BTN_OFFSET_DIGITAL1)
@@ -231,14 +389,17 @@ struct Button
 struct AnalogStick
 {
 	u32 m_offset = 0;
-	u32 m_keyCodeMin = 0;
-	u32 m_keyCodeMax = 0;
+	std::set<u32> m_key_codes_min{};
+	std::set<u32> m_key_codes_max{};
 	u16 m_value = 128;
 
-	AnalogStick(u32 offset, u32 keyCodeMin, u32 keyCodeMax)
+	std::map<u32, u16> m_pressed_keys_min{}; // only used in keyboard_pad_handler
+	std::map<u32, u16> m_pressed_keys_max{}; // only used in keyboard_pad_handler
+
+	AnalogStick(u32 offset, std::set<u32> key_codes_min, std::set<u32> key_codes_max)
 		: m_offset(offset)
-		, m_keyCodeMin(keyCodeMin)
-		, m_keyCodeMax(keyCodeMax)
+		, m_key_codes_min(std::move(key_codes_min))
+		, m_key_codes_max(std::move(key_codes_max))
 	{}
 };
 
@@ -286,7 +447,11 @@ struct Pad
 	u16 m_product_id{0};
 
 	s32 m_pressure_intensity_button_index{-1}; // Special button index. -1 if not set.
+	bool m_pressure_intensity_button_pressed{}; // Last sensitivity button press state, used for toggle.
+	bool m_pressure_intensity_toggled{}; // Whether the sensitivity is toggled on or off.
 	u8 m_pressure_intensity{127}; // 0-255
+	bool m_adjust_pressure_last{}; // only used in keyboard_pad_handler
+	bool get_pressure_intensity_button_active(bool is_toggle_mode);
 
 	// Cable State:   0 - 1  plugged in ?
 	u8 m_cable_state{0};

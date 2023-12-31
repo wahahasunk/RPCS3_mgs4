@@ -21,7 +21,7 @@
 #include "util/asm.hpp"
 #include "util/fence.hpp"
 
-#ifdef _M_X64
+#if defined(_M_X64) && defined(_MSC_VER)
 extern "C" u64 _xgetbv(u32);
 #endif
 
@@ -177,6 +177,71 @@ bool utils::has_avx512_vnni()
 #endif
 }
 
+bool utils::has_avx10()
+{
+#if defined(ARCH_X64)
+	// Implies support for most AVX-512 instructions
+	static const bool g_value = get_cpuid(0, 0)[0] >= 0x7 && get_cpuid(7, 1)[3] & 0x80000;
+	return g_value;
+#else
+	return false;
+#endif
+}
+
+bool utils::has_avx10_512()
+{
+#if defined(ARCH_X64)
+	// AVX10 with 512 wide vectors
+	static const bool g_value = has_avx10() && get_cpuid(24, 0)[2] & 0x40000;
+	return g_value;
+#else
+	return false;
+#endif
+}
+
+u32 utils::avx10_isa_version()
+{
+#if defined(ARCH_X64)
+	// 8bit value
+	static const u32 g_value = []()
+	{
+		u32 isa_version = 0;
+		if (has_avx10())
+		{
+			isa_version = get_cpuid(24, 0)[2] & 0x000ff;
+		}
+
+		return isa_version;
+	}();
+
+	return g_value;
+#else
+	return 0;
+#endif
+}
+
+bool utils::has_avx512_256()
+{
+#if defined(ARCH_X64)
+	// Either AVX10 or AVX512 implies support for 256-bit length AVX-512 SKL-X tier instructions
+	static const bool g_value = (has_avx512() || has_avx10());
+	return g_value;
+#else
+	return false;
+#endif
+}
+
+bool utils::has_avx512_icl_256()
+{
+#if defined(ARCH_X64)
+	// Check for AVX512_ICL or check for AVX10, together with GFNI, VAES, and VPCLMULQDQ, implies support for the same instructions that AVX-512_icl does at 256 bit length
+	static const bool g_value = (has_avx512_icl() || (has_avx10() && get_cpuid(7, 0)[2] & 0x00000700));
+	return g_value;
+#else
+	return false;
+#endif
+}
+
 bool utils::has_xop()
 {
 #if defined(ARCH_X64)
@@ -233,7 +298,7 @@ bool utils::has_fma4()
 bool utils::has_fast_vperm2b()
 {
 #if defined(ARCH_X64)
-	static const bool g_value = has_avx512() && (get_cpuid(7, 0)[2] & 0x2) == 0x2 && get_cpuid(0, 0)[0] >= 0x7 && (get_cpuid(0x80000001, 0)[2] & 0x20) == 0x20;
+	static const bool g_value = has_avx512() && (get_cpuid(7, 0)[2] & 0x2) == 0x2 && get_cpuid(0, 0)[0] >= 0x7 && (get_cpuid(0x80000001, 0)[2] & 0x40) == 0x40;
 	return g_value;
 #else
 	return false;
@@ -258,6 +323,46 @@ bool utils::has_fsrm()
 #else
 	return false;
 #endif
+}
+
+bool utils::has_waitx()
+{
+#if defined(ARCH_X64)
+	static const bool g_value = get_cpuid(0, 0)[0] >= 0x7 && (get_cpuid(0x80000001, 0)[2] & 0x20000000) == 0x20000000;
+	return g_value;
+#else
+	return false;
+#endif
+}
+
+bool utils::has_waitpkg()
+{
+#if defined(ARCH_X64)
+	static const bool g_value = get_cpuid(0, 0)[0] >= 0x7 && (get_cpuid(7, 0)[2] & 0x20) == 0x20;
+	return g_value;
+#else
+	return false;
+#endif
+}
+
+// User mode waits may be unfriendly to low thread CPUs
+// Filter out systems with less than 8 threads for linux and less than 12 threads for other platforms
+bool utils::has_appropriate_um_wait()
+{
+#ifdef __linux__
+	static const bool g_value = (has_waitx() || has_waitpkg()) && (get_thread_count() >= 8) && get_tsc_freq();
+	return g_value;
+#else
+	static const bool g_value = (has_waitx() || has_waitpkg()) && (get_thread_count() >= 12) && get_tsc_freq();
+	return g_value;
+#endif
+}
+
+// Similar to the above function but allow execution if alternatives such as yield are not wanted
+bool utils::has_um_wait()
+{
+	static const bool g_value = (has_waitx() || has_waitpkg()) && get_tsc_freq();
+	return g_value;
 }
 
 u32 utils::get_rep_movsb_threshold()
@@ -335,7 +440,21 @@ std::string utils::get_system_info()
 	{
 		result += " | AVX";
 
-		if (has_avx512())
+		if (has_avx10())
+		{
+			const u32 avx10_version = avx10_isa_version();
+			fmt::append(result, "10.%d", avx10_version);
+
+			if (has_avx10_512())
+			{
+				result += "-512";
+			}
+			else
+			{
+				result += "-256";
+			}
+		}
+		else if (has_avx512())
 		{
 			result += "-512";
 
@@ -414,14 +533,35 @@ std::string utils::get_firmware_version()
 
 		version = version.substr(start, end - start);
 
-		// Trim version
-		const usz trim_start = version.find_first_not_of('0');
-		const usz trim_end = version.find_last_not_of('0');
+		// Trim version (e.g. '04.8900' becomes '4.89')
+		usz trim_start = version.find_first_not_of('0');
 
 		if (trim_start == umax)
 		{
 			return {};
 		}
+
+		// Keep at least one preceding 0 (e.g. '00.3100' becomes '0.31' instead of '.31')
+		if (version[trim_start] == '.')
+		{
+			if (trim_start == 0)
+			{
+				// Version starts with '.' for some reason
+				return {};
+			}
+
+			trim_start--;
+		}
+
+		const usz dot_pos = version.find_first_of('.', trim_start);
+
+		if (dot_pos == umax)
+		{
+			return {};
+		}
+
+		// Try to keep the second 0 in the minor version (e.g. '04.9000' becomes '4.90' instead of '4.9')
+		const usz trim_end = std::max(version.find_last_not_of('0', dot_pos + 1), std::min(dot_pos + 2, version.size()));
 
 		return std::string(version.substr(trim_start, trim_end));
 	}
@@ -449,8 +589,8 @@ std::string utils::get_OS_version()
 	std::vector<char> holder(service_pack.Length + 1, '\0');
 	if (has_sp)
 	{
-		WideCharToMultiByte(CP_UTF8, NULL, service_pack.Buffer, service_pack.Length,
-			(LPSTR) holder.data(), static_cast<int>(holder.size()), nullptr, nullptr);
+		WideCharToMultiByte(CP_UTF8, 0, service_pack.Buffer, service_pack.Length,
+			static_cast<LPSTR>(holder.data()), static_cast<int>(holder.size()), nullptr, nullptr);
 	}
 
 	fmt::append(output,

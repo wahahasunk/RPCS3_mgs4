@@ -47,7 +47,11 @@ nt_p2p_port::nt_p2p_port(u16 port)
 	// Creates and bind P2P Socket
 	p2p_socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
 
+#ifdef _WIN32
+	if (p2p_socket == INVALID_SOCKET)
+#else
 	if (p2p_socket == -1)
+#endif
 		fmt::throw_exception("Failed to create DGRAM socket for P2P socket: %s!", get_last_error(true));
 
 #ifdef _WIN32
@@ -86,9 +90,6 @@ nt_p2p_port::~nt_p2p_port()
 		::close(p2p_socket);
 #endif
 	}
-
-	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
-	nph.upnp_remove_port_mapping(port, "UDP");
 }
 
 void nt_p2p_port::dump_packet(p2ps_encapsulated_tcp* tcph)
@@ -133,9 +134,9 @@ bool nt_p2p_port::handle_listening(s32 sock_id, p2ps_encapsulated_tcp* tcp_heade
 
 bool nt_p2p_port::recv_data()
 {
-	::sockaddr_storage native_addr;
+	::sockaddr_storage native_addr{};
 	::socklen_t native_addrlen = sizeof(native_addr);
-	const auto recv_res        = ::recvfrom(p2p_socket, reinterpret_cast<char*>(p2p_recv_data.data()), p2p_recv_data.size(), 0, reinterpret_cast<struct sockaddr*>(&native_addr), &native_addrlen);
+	const auto recv_res        = ::recvfrom(p2p_socket, reinterpret_cast<char*>(p2p_recv_data.data()), ::size32(p2p_recv_data), 0, reinterpret_cast<struct sockaddr*>(&native_addr), &native_addrlen);
 
 	if (recv_res == -1)
 	{

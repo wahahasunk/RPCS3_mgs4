@@ -1,5 +1,6 @@
 #include <QButtonGroup>
-#include <QCameraInfo>
+#include <QCameraDevice>
+#include <QMediaDevices>
 #include <QDialogButtonBox>
 #include <QFontMetrics>
 #include <QPushButton>
@@ -10,7 +11,7 @@
 #include <QSpinBox>
 #include <QTimer>
 #include <QScreen>
-#include <QUrl>
+#include <QStyleFactory>
 
 #include "gui_settings.h"
 #include "display_sleep_control.h"
@@ -92,7 +93,7 @@ void remove_item(QComboBox* box, int data_value, int def_value)
 
 extern const std::map<std::string_view, int> g_prx_list;
 
-settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std::shared_ptr<emu_settings> emu_settings, const int& tab_index, QWidget *parent, const GameInfo* game)
+settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std::shared_ptr<emu_settings> emu_settings, const int& tab_index, QWidget* parent, const GameInfo* game, bool create_cfg_from_global_cfg)
 	: QDialog(parent)
 	, m_tab_index(tab_index)
 	, ui(new Ui::settings_dialog)
@@ -137,7 +138,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 	if (game)
 	{
-		m_emu_settings->LoadSettings(game->serial);
+		m_emu_settings->LoadSettings(game->serial, create_cfg_from_global_cfg);
 		setWindowTitle(tr("Settings: [%0] %1", "Settings dialog").arg(qstr(game->serial)).arg(qstr(game->name)));
 	}
 	else
@@ -264,35 +265,10 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->spuLoopDetection, emu_settings_type::SPULoopDetection);
 	SubscribeTooltip(ui->spuLoopDetection, tooltips.settings.spu_loop_detection);
 
-	m_emu_settings->EnhanceCheckBox(ui->fullWidthAVX512, emu_settings_type::FullWidthAVX512);
-	SubscribeTooltip(ui->fullWidthAVX512, tooltips.settings.full_width_avx512);
-	ui->fullWidthAVX512->setEnabled(utils::has_avx512());
-
 	// Comboboxes
+	m_emu_settings->EnhanceComboBox(ui->xfloatAccuracy, emu_settings_type::XFloatAccuracy);
 	SubscribeTooltip(ui->gb_xfloat_accuracy, tooltips.settings.xfloat);
-	ui->xfloatAccuracy->addItem(tr("Accurate XFloat"));
-	ui->xfloatAccuracy->addItem(tr("Approximate XFloat"));
-	ui->xfloatAccuracy->addItem(tr("Relaxed XFloat"));
-
-	connect(ui->xfloatAccuracy, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index)
-	{
-		if (index < 0) return;
-
-		m_emu_settings->SetSetting(emu_settings_type::AccurateXFloat, index == 0 ? "true" : "false");
-		m_emu_settings->SetSetting(emu_settings_type::ApproximateXFloat, index == 1 ? "true" : "false");
-	});
-
-	connect(m_emu_settings.get(), &emu_settings::RestoreDefaultsSignal, this, [this]()
-	{
-		ui->xfloatAccuracy->setCurrentIndex(1);
-	});
-
-	if (m_emu_settings->GetSetting(emu_settings_type::AccurateXFloat) == "true")
-		ui->xfloatAccuracy->setCurrentIndex(0);
-	else if (m_emu_settings->GetSetting(emu_settings_type::ApproximateXFloat) == "true")
-		ui->xfloatAccuracy->setCurrentIndex(1);
-	else
-		ui->xfloatAccuracy->setCurrentIndex(2);
+	remove_item(ui->xfloatAccuracy, static_cast<int>(xfloat_accuracy::inaccurate), static_cast<int>(g_cfg.core.spu_xfloat_accuracy.def));
 
 	m_emu_settings->EnhanceComboBox(ui->spuBlockSize, emu_settings_type::SPUBlockSize);
 	SubscribeTooltip(ui->gb_spuBlockSize, tooltips.settings.spu_block_size);
@@ -387,12 +363,10 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 	// PPU tool tips
 	SubscribeTooltip(ui->ppu__static, tooltips.settings.ppu__static);
-	SubscribeTooltip(ui->ppu_dynamic, tooltips.settings.ppu_dynamic);
 	SubscribeTooltip(ui->ppu_llvm,    tooltips.settings.ppu_llvm);
 
 	QButtonGroup *ppu_bg = new QButtonGroup(this);
 	ppu_bg->addButton(ui->ppu__static, static_cast<int>(ppu_decoder_type::_static));
-	ppu_bg->addButton(ui->ppu_dynamic, static_cast<int>(ppu_decoder_type::dynamic));
 	ppu_bg->addButton(ui->ppu_llvm,    static_cast<int>(ppu_decoder_type::llvm));
 
 	connect(ppu_bg, &QButtonGroup::idToggled, [this](int id, bool checked)
@@ -406,7 +380,6 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 			ui->accuratePPUNJ->setEnabled(true);
 			ui->accuratePPUVNAN->setEnabled(true);
 			break;
-		case static_cast<int>(ppu_decoder_type::dynamic):
 		case static_cast<int>(ppu_decoder_type::llvm):
 			ui->accuratePPUFPCC->setEnabled(false);
 			ui->accuratePPUNJ->setEnabled(false);
@@ -457,7 +430,6 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	ui->spu_llvm->setEnabled(false);
 	ui->spu_dynamic->setEnabled(false);
 #endif
-	ui->ppu_dynamic->setEnabled(false);
 
 	//     _____ _____  _    _   _______    _
 	//    / ____|  __ \| |  | | |__   __|  | |
@@ -629,6 +601,10 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceComboBox(ui->outputScalingMode, emu_settings_type::OutputScalingMode);
 	SubscribeTooltip(ui->outputScalingMode, tooltips.settings.output_scaling_mode);
 
+	// 3D
+	m_emu_settings->EnhanceComboBox(ui->stereoRenderMode, emu_settings_type::StereoRenderMode);
+	SubscribeTooltip(ui->gb_stereo, tooltips.settings.stereo_render_mode);
+
 	// Checkboxes: main options
 	m_emu_settings->EnhanceCheckBox(ui->dumpColor, emu_settings_type::WriteColorBuffers);
 	SubscribeTooltip(ui->dumpColor, tooltips.settings.dump_color);
@@ -639,16 +615,8 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->stretchToDisplayArea, emu_settings_type::StretchToDisplayArea);
 	SubscribeTooltip(ui->stretchToDisplayArea, tooltips.settings.stretch_to_display_area);
 
-	m_emu_settings->EnhanceCheckBox(ui->disableVertexCache, emu_settings_type::DisableVertexCache);
-	SubscribeTooltip(ui->disableVertexCache, tooltips.settings.disable_vertex_cache);
-
 	m_emu_settings->EnhanceCheckBox(ui->multithreadedRSX, emu_settings_type::MultithreadedRSX);
 	SubscribeTooltip(ui->multithreadedRSX, tooltips.settings.multithreaded_rsx);
-	connect(ui->multithreadedRSX, &QCheckBox::toggled, [this](bool checked)
-	{
-		ui->disableVertexCache->setEnabled(!checked);
-	});
-	ui->disableVertexCache->setEnabled(!ui->multithreadedRSX->isChecked());
 
 	m_emu_settings->EnhanceCheckBox(ui->strictModeRendering, emu_settings_type::StrictRenderingMode);
 	SubscribeTooltip(ui->strictModeRendering, tooltips.settings.strict_rendering_mode);
@@ -689,7 +657,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	{
 		if (percentage == resolution_scale_def)
 		{
-			return tr("100% (Default)", "Resolution scale");
+			return tr("100% (1280x720) (Default)", "Resolution scale");
 		}
 		return tr("%1% (%2x%3)", "Resolution scale").arg(percentage).arg(1280 * percentage / 100).arg(720 * percentage / 100);
 	};
@@ -834,11 +802,11 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 				idx = 0;
 				if (renderer.old_adapter.isEmpty())
 				{
-					rsx_log.warning("%s adapter config empty: setting to default!", sstr(renderer.name));
+					rsx_log.warning("%s adapter config empty: setting to default!", renderer.name);
 				}
 				else
 				{
-					rsx_log.warning("Last used %s adapter not found: setting to default!", sstr(renderer.name));
+					rsx_log.warning("Last used %s adapter not found: setting to default!", renderer.name);
 				}
 			}
 			ui->graphicsAdapterBox->setCurrentIndex(idx);
@@ -976,7 +944,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	const auto change_microphone_device = [mic_none, propagate_used_devices, this](u32 index, const QString& text)
 	{
 		m_emu_settings->SetSetting(emu_settings_type::MicrophoneDevices, m_emu_settings->m_microphone_creator.set_device(index, text));
-		if (const u32 next_index = index + 1; next_index < 4 && text == mic_none)
+		if (const u32 next_index = index + 1; next_index < m_mics_combo.size() && text == mic_none)
 			m_mics_combo[next_index]->setCurrentText(mic_none);
 		propagate_used_devices();
 	};
@@ -1129,7 +1097,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 	const std::array<std::string, 4> mic_sel_list = m_emu_settings->m_microphone_creator.get_selection_list();
 
-	for (s32 index = 3; index >= 0; index--)
+	for (s32 index = static_cast<int>(mic_sel_list.size()) - 1; index >= 0; index--)
 	{
 		const QString qmic = qstr(mic_sel_list[index]);
 
@@ -1203,10 +1171,10 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		const std::string selected_camera = m_emu_settings->GetSetting(emu_settings_type::CameraID);
 		ui->cameraIdBox->addItem(tr("None", "Camera Device"), "");
 		ui->cameraIdBox->addItem(tr("Default", "Camera Device"), qstr(default_camera));
-		for (const QCameraInfo& camera_info : QCameraInfo::availableCameras())
+		for (const QCameraDevice& camera_info : QMediaDevices::videoInputs())
 		{
 			if (!camera_info.isNull())
-				ui->cameraIdBox->addItem(camera_info.description(), camera_info.deviceName());
+				ui->cameraIdBox->addItem(camera_info.description(), camera_info.id());
 		}
 		if (const int index = ui->cameraIdBox->findData(qstr(selected_camera)); index >= 0)
 		{
@@ -1250,8 +1218,117 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->backgroundInputBox, emu_settings_type::BackgroundInput);
 	SubscribeTooltip(ui->backgroundInputBox, tooltips.settings.background_input);
 
+	m_emu_settings->EnhanceCheckBox(ui->padConnectionBox, emu_settings_type::PadConnection);
+	SubscribeTooltip(ui->padConnectionBox, tooltips.settings.pad_connection);
+
 	m_emu_settings->EnhanceCheckBox(ui->showMoveCursorBox, emu_settings_type::ShowMoveCursor);
 	SubscribeTooltip(ui->showMoveCursorBox, tooltips.settings.show_move_cursor);
+
+	m_emu_settings->EnhanceCheckBox(ui->lockOverlayInputToPlayerOne, emu_settings_type::LockOvlIptToP1);
+	SubscribeTooltip(ui->lockOverlayInputToPlayerOne, tooltips.settings.lock_overlay_input_to_player_one);
+
+#if HAVE_SDL2
+	m_emu_settings->EnhanceCheckBox(ui->loadSdlMappings, emu_settings_type::SDLMappings);
+	SubscribeTooltip(ui->loadSdlMappings, tooltips.settings.sdl_mappings);
+#else
+	ui->loadSdlMappings->setVisible(false);
+#endif
+
+	// Midi
+	const QString midi_none = m_emu_settings->m_midi_creator.get_none();
+	const midi_device def_midi_device{ .type = midi_device_type::keyboard, .name = midi_none.toStdString() };
+	const std::vector<std::string> midi_device_types = cfg::try_to_enum_list(&fmt_class_string<midi_device_type>::format);
+
+	m_midi_type_combo[0] = ui->midiTypeBox1;
+	m_midi_type_combo[1] = ui->midiTypeBox2;
+	m_midi_type_combo[2] = ui->midiTypeBox3;
+	m_midi_device_combo[0] = ui->midiDeviceBox1;
+	m_midi_device_combo[1] = ui->midiDeviceBox2;
+	m_midi_device_combo[2] = ui->midiDeviceBox3;
+
+	SubscribeTooltip(ui->gb_midi_1, tooltips.settings.midi_devices);
+	SubscribeTooltip(ui->gb_midi_2, tooltips.settings.midi_devices);
+	SubscribeTooltip(ui->gb_midi_3, tooltips.settings.midi_devices);
+
+	const auto propagate_midi_devices = [midi_none, this]()
+	{
+		for (u32 index = 0; index < m_midi_device_combo.size(); index++)
+		{
+			const QString cur_item = m_midi_device_combo[index]->currentText();
+			QStringList cur_list = m_emu_settings->m_midi_creator.get_midi_list();
+			for (u32 subindex = 0; subindex < m_midi_device_combo.size(); subindex++)
+			{
+				if (subindex != index && m_midi_device_combo[subindex]->currentText() != midi_none)
+					cur_list.removeOne(m_midi_device_combo[subindex]->currentText());
+			}
+			m_midi_device_combo[index]->blockSignals(true);
+			m_midi_device_combo[index]->clear();
+			m_midi_device_combo[index]->addItems(cur_list);
+			m_midi_device_combo[index]->setCurrentText(cur_item);
+			m_midi_device_combo[index]->blockSignals(false);
+		}
+	};
+
+	const auto change_midi_device = [propagate_midi_devices, this](u32 index, const midi_device& device)
+	{
+		m_emu_settings->SetSetting(emu_settings_type::MidiDevices, m_emu_settings->m_midi_creator.set_device(index, device));
+		propagate_midi_devices();
+	};
+
+	for (u32 i = 0; i < m_midi_type_combo.size(); i++)
+	{
+		m_midi_type_combo[i]->blockSignals(true);
+		for (const std::string& type_str : midi_device_types)
+		{
+			midi_device_type type{};
+			if (u64 result; cfg::try_to_enum_value(&result, &fmt_class_string<midi_device_type>::format, type_str))
+			{
+				type = static_cast<midi_device_type>(static_cast<std::underlying_type_t<midi_device_type>>(result));
+			}
+			const QString type_name = m_emu_settings->GetLocalizedSetting(QString::fromStdString(fmt::format("%s", type)), emu_settings_type::MidiDevices, static_cast<int>(type), false);
+			m_midi_type_combo[i]->addItem(type_name, static_cast<int>(type));
+		}
+		m_midi_type_combo[i]->blockSignals(false);
+
+		connect(m_midi_type_combo[i], &QComboBox::currentTextChanged, this, [this, change_midi_device, i](const QString& /*text*/)
+		{
+			const midi_device device{ .type = static_cast<midi_device_type>(m_midi_type_combo[i]->currentData().toInt()), .name = m_midi_device_combo[i]->currentText().toStdString() };
+			change_midi_device(i, device);
+		});
+		connect(m_midi_device_combo[i], &QComboBox::currentTextChanged, this, [this, change_midi_device, i](const QString& text)
+		{
+			const midi_device device{ .type = static_cast<midi_device_type>(m_midi_type_combo[i]->currentData().toInt()), .name = text.toStdString() };
+			change_midi_device(i, device);
+		});
+		connect(this, &settings_dialog::signal_restore_dependant_defaults, this, [change_midi_device, i, def_midi_device]() { change_midi_device(i, def_midi_device); });
+	}
+
+	m_emu_settings->m_midi_creator.refresh_list();
+	propagate_midi_devices(); // Fills comboboxes list
+
+	m_emu_settings->m_midi_creator.parse_devices(m_emu_settings->GetSetting(emu_settings_type::MidiDevices));
+
+	const std::array<midi_device, max_midi_devices> midi_sel_list = m_emu_settings->m_midi_creator.get_selection_list();
+
+	for (s32 index = static_cast<int>(midi_sel_list.size()) - 1; index >= 0; index--)
+	{
+		const midi_device& device = midi_sel_list[index];
+		const QString qmidi = QString::fromStdString(device.name);
+
+		m_midi_type_combo[index]->setCurrentIndex(m_midi_type_combo[index]->findData(static_cast<int>(device.type)));
+
+		if (qmidi.isEmpty() || m_midi_device_combo[index]->findText(qmidi) == -1)
+		{
+			m_midi_device_combo[index]->setCurrentText(midi_none);
+			change_midi_device(index, def_midi_device); // Ensures the value is set in config
+		}
+		else
+		{
+			m_midi_device_combo[index]->setCurrentText(qmidi);
+		}
+	}
+
+	propagate_midi_devices(); // Enables/Disables comboboxes and checks values from config for sanity
 
 	//     _____           _                   _______    _
 	//    / ____|         | |                 |__   __|  | |
@@ -1368,29 +1445,29 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	SubscribeTooltip(ui->accurateDFMA, tooltips.settings.accurate_dfma);
 	ui->accurateDFMA->setDisabled(utils::has_fma3() || utils::has_fma4());
 
+	m_emu_settings->EnhanceCheckBox(ui->accurateGETLLAR, emu_settings_type::AccurateGETLLAR);
+	SubscribeTooltip(ui->accurateGETLLAR, tooltips.settings.accurate_getllar);
+
+	m_emu_settings->EnhanceCheckBox(ui->accurateRSXAccess, emu_settings_type::AccurateRSXAccess);
+	SubscribeTooltip(ui->accurateRSXAccess, tooltips.settings.accurate_rsx_access);
+
+	m_emu_settings->EnhanceCheckBox(ui->accurateSpuDMA, emu_settings_type::AccurateSpuDMA);
+	SubscribeTooltip(ui->accurateSpuDMA, tooltips.settings.accurate_spu_dma);
+
 	m_emu_settings->EnhanceCheckBox(ui->ppuNJFixup, emu_settings_type::PPUNJFixup);
 	SubscribeTooltip(ui->ppuNJFixup, tooltips.settings.fixup_ppunj);
-
-	m_emu_settings->EnhanceCheckBox(ui->accuratePPUSAT, emu_settings_type::AccuratePPUSAT);
-	SubscribeTooltip(ui->accuratePPUSAT, tooltips.settings.accurate_ppusat);
-
-	m_emu_settings->EnhanceCheckBox(ui->accuratePPUNJ, emu_settings_type::AccuratePPUNJ);
-	SubscribeTooltip(ui->accuratePPUNJ, tooltips.settings.accurate_ppunj);
 
 	m_emu_settings->EnhanceCheckBox(ui->fixupPPUVNAN, emu_settings_type::FixupPPUVNAN);
 	SubscribeTooltip(ui->fixupPPUVNAN, tooltips.settings.fixup_ppuvnan);
 
-	m_emu_settings->EnhanceCheckBox(ui->accuratePPUVNAN, emu_settings_type::AccuratePPUVNAN);
-	SubscribeTooltip(ui->accuratePPUVNAN, tooltips.settings.accurate_ppuvnan);
-
-	m_emu_settings->EnhanceCheckBox(ui->accuratePPUFPCC, emu_settings_type::AccuratePPUFPCC);
-	SubscribeTooltip(ui->accuratePPUFPCC, tooltips.settings.accurate_ppufpcc);
+	m_emu_settings->EnhanceCheckBox(ui->llvmPrecompilation, emu_settings_type::LLVMPrecompilation);
+	SubscribeTooltip(ui->llvmPrecompilation, tooltips.settings.llvm_precompilation);
 
 	m_emu_settings->EnhanceCheckBox(ui->suspendSavestates, emu_settings_type::SuspendEmulationSavestateMode);
 	SubscribeTooltip(ui->suspendSavestates, tooltips.settings.suspend_savestates);
 
-	m_emu_settings->EnhanceCheckBox(ui->pausedSavestates, emu_settings_type::StartSavestatePaused);
-	SubscribeTooltip(ui->pausedSavestates, tooltips.settings.paused_savestates);
+	m_emu_settings->EnhanceCheckBox(ui->compatibleSavestates, emu_settings_type::CompatibleEmulationSavestateMode);
+	SubscribeTooltip(ui->compatibleSavestates, tooltips.settings.compatible_savestates);
 
 	m_emu_settings->EnhanceCheckBox(ui->silenceAllLogs, emu_settings_type::SilenceAllLogs);
 	SubscribeTooltip(ui->silenceAllLogs, tooltips.settings.silence_all_logs);
@@ -1403,6 +1480,9 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 
 	m_emu_settings->EnhanceCheckBox(ui->dumpDepth, emu_settings_type::WriteDepthBuffer);
 	SubscribeTooltip(ui->dumpDepth, tooltips.settings.dump_depth);
+
+	m_emu_settings->EnhanceCheckBox(ui->handleTiledMemory, emu_settings_type::HandleRSXTiledMemory);
+	SubscribeTooltip(ui->handleTiledMemory, tooltips.settings.handle_tiled_memory);
 
 	m_emu_settings->EnhanceCheckBox(ui->disableOnDiskShaderCache, emu_settings_type::DisableOnDiskShaderCache);
 	SubscribeTooltip(ui->disableOnDiskShaderCache, tooltips.settings.disable_on_disk_shader_cache);
@@ -1647,8 +1727,8 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->exitOnStop, emu_settings_type::ExitRPCS3OnFinish);
 	SubscribeTooltip(ui->exitOnStop, tooltips.settings.exit_on_stop);
 
-	m_emu_settings->EnhanceCheckBox(ui->alwaysStart, emu_settings_type::StartOnBoot);
-	SubscribeTooltip(ui->alwaysStart, tooltips.settings.start_on_boot);
+	m_emu_settings->EnhanceCheckBox(ui->pauseOnFocusLoss, emu_settings_type::PauseOnFocusLoss);
+	SubscribeTooltip(ui->pauseOnFocusLoss, tooltips.settings.pause_on_focus_loss);
 
 	m_emu_settings->EnhanceCheckBox(ui->startGameFullscreen, emu_settings_type::StartGameFullscreen);
 	SubscribeTooltip(ui->startGameFullscreen, tooltips.settings.start_game_fullscreen);
@@ -1666,8 +1746,14 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->showShaderCompilationHint, emu_settings_type::ShowShaderCompilationHint);
 	SubscribeTooltip(ui->showShaderCompilationHint, tooltips.settings.show_shader_compilation_hint);
 
+	m_emu_settings->EnhanceCheckBox(ui->showPPUCompilationHint, emu_settings_type::ShowPPUCompilationHint);
+	SubscribeTooltip(ui->showPPUCompilationHint, tooltips.settings.show_ppu_compilation_hint);
+
 	m_emu_settings->EnhanceCheckBox(ui->pauseDuringHomeMenu, emu_settings_type::PauseDuringHomeMenu);
 	SubscribeTooltip(ui->pauseDuringHomeMenu, tooltips.settings.pause_during_home_menu);
+
+	m_emu_settings->EnhanceCheckBox(ui->pausedSavestates, emu_settings_type::StartSavestatePaused);
+	SubscribeTooltip(ui->pausedSavestates, tooltips.settings.paused_savestates);
 
 	m_emu_settings->EnhanceCheckBox(ui->perfOverlayCenterX, emu_settings_type::PerfOverlayCenterX);
 	SubscribeTooltip(ui->perfOverlayCenterX, tooltips.settings.perf_overlay_center_x);
@@ -1980,6 +2066,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		SubscribeTooltip(ui->cb_show_pup_install, tooltips.settings.show_pup_install);
 		SubscribeTooltip(ui->cb_show_obsolete_cfg_dialog, tooltips.settings.show_obsolete_cfg);
 		SubscribeTooltip(ui->cb_show_same_buttons_dialog, tooltips.settings.show_same_buttons);
+		SubscribeTooltip(ui->cb_show_restart_hint, tooltips.settings.show_restart_hint);
 		SubscribeTooltip(ui->gb_updates, tooltips.settings.check_update_start);
 		SubscribeTooltip(ui->gb_uuid, tooltips.settings.uuid);
 
@@ -2069,6 +2156,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		ui->cb_show_pup_install->setChecked(m_gui_settings->GetValue(gui::ib_pup_success).toBool());
 		ui->cb_show_obsolete_cfg_dialog->setChecked(m_gui_settings->GetValue(gui::ib_obsolete_cfg).toBool());
 		ui->cb_show_same_buttons_dialog->setChecked(m_gui_settings->GetValue(gui::ib_same_buttons).toBool());
+		ui->cb_show_restart_hint->setChecked(m_gui_settings->GetValue(gui::ib_restart_hint).toBool());
 
 		ui->combo_updates->addItem(tr("Yes", "Updates"), gui::update_on);
 		ui->combo_updates->addItem(tr("Background", "Updates"), gui::update_bkg);
@@ -2115,6 +2203,10 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		connect(ui->cb_show_same_buttons_dialog, &QCheckBox::toggled, [this](bool checked)
 		{
 			m_gui_settings->SetValue(gui::ib_same_buttons, checked);
+		});
+		connect(ui->cb_show_restart_hint, &QCheckBox::toggled, [this](bool checked)
+		{
+			m_gui_settings->SetValue(gui::ib_restart_hint, checked);
 		});
 
 		connect(ui->cb_custom_colors, &QCheckBox::toggled, [this](bool checked)
@@ -2207,16 +2299,19 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->strictTextureFlushing, emu_settings_type::StrictTextureFlushing);
 	SubscribeTooltip(ui->strictTextureFlushing, tooltips.settings.strict_texture_flushing);
 
-	m_emu_settings->EnhanceCheckBox(ui->Enable3D, emu_settings_type::Enable3D);
-	SubscribeTooltip(ui->Enable3D, tooltips.settings.enable_3d);
-
 	m_emu_settings->EnhanceCheckBox(ui->gpuTextureScaling, emu_settings_type::GPUTextureScaling);
 	SubscribeTooltip(ui->gpuTextureScaling, tooltips.settings.gpu_texture_scaling);
 
 	m_emu_settings->EnhanceCheckBox(ui->allowHostGPULabels, emu_settings_type::AllowHostGPULabels);
 	SubscribeTooltip(ui->allowHostGPULabels, tooltips.settings.allow_host_labels);
 
+	m_emu_settings->EnhanceCheckBox(ui->disableVertexCache, emu_settings_type::DisableVertexCache);
+	SubscribeTooltip(ui->disableVertexCache, tooltips.settings.disable_vertex_cache);
+
 	// Checkboxes: core debug options
+	m_emu_settings->EnhanceCheckBox(ui->alwaysStart, emu_settings_type::StartOnBoot);
+	SubscribeTooltip(ui->alwaysStart, tooltips.settings.start_on_boot);
+
 	m_emu_settings->EnhanceCheckBox(ui->ppuDebug, emu_settings_type::PPUDebug);
 	SubscribeTooltip(ui->ppuDebug, tooltips.settings.ppu_debug);
 
@@ -2229,20 +2324,20 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	m_emu_settings->EnhanceCheckBox(ui->setDAZandFTZ, emu_settings_type::SetDAZandFTZ);
 	SubscribeTooltip(ui->setDAZandFTZ, tooltips.settings.set_daz_and_ftz);
 
-	m_emu_settings->EnhanceCheckBox(ui->accurateGETLLAR, emu_settings_type::AccurateGETLLAR);
-	SubscribeTooltip(ui->accurateGETLLAR, tooltips.settings.accurate_getllar);
+	m_emu_settings->EnhanceCheckBox(ui->accuratePPUSAT, emu_settings_type::AccuratePPUSAT);
+	SubscribeTooltip(ui->accuratePPUSAT, tooltips.settings.accurate_ppusat);
 
-	m_emu_settings->EnhanceCheckBox(ui->accurateSpuDMA, emu_settings_type::AccurateSpuDMA);
-	SubscribeTooltip(ui->accurateSpuDMA, tooltips.settings.accurate_spu_dma);
+	m_emu_settings->EnhanceCheckBox(ui->accuratePPUNJ, emu_settings_type::AccuratePPUNJ);
+	SubscribeTooltip(ui->accuratePPUNJ, tooltips.settings.accurate_ppunj);
+
+	m_emu_settings->EnhanceCheckBox(ui->accuratePPUVNAN, emu_settings_type::AccuratePPUVNAN);
+	SubscribeTooltip(ui->accuratePPUVNAN, tooltips.settings.accurate_ppuvnan);
+
+	m_emu_settings->EnhanceCheckBox(ui->accuratePPUFPCC, emu_settings_type::AccuratePPUFPCC);
+	SubscribeTooltip(ui->accuratePPUFPCC, tooltips.settings.accurate_ppufpcc);
 
 	m_emu_settings->EnhanceCheckBox(ui->accurateClineStores, emu_settings_type::AccurateClineStores);
 	SubscribeTooltip(ui->accurateClineStores, tooltips.settings.accurate_cache_line_stores);
-
-	m_emu_settings->EnhanceCheckBox(ui->accurateRSXAccess, emu_settings_type::AccurateRSXAccess);
-	SubscribeTooltip(ui->accurateRSXAccess, tooltips.settings.accurate_rsx_access);
-
-	m_emu_settings->EnhanceCheckBox(ui->ppuPrecompilation, emu_settings_type::PPULLVMPrecompilation);
-	SubscribeTooltip(ui->ppuPrecompilation, tooltips.settings.ppu_precompilation);
 
 	m_emu_settings->EnhanceCheckBox(ui->hookStFunc, emu_settings_type::HookStaticFuncs);
 	SubscribeTooltip(ui->hookStFunc, tooltips.settings.hook_static_functions);
@@ -2266,9 +2361,14 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	}
 }
 
-settings_dialog::~settings_dialog()
+void settings_dialog::closeEvent([[maybe_unused]] QCloseEvent* event)
 {
 	m_gui_settings->SetValue(gui::cfg_geometry, saveGeometry());
+	m_gui_settings->sync();
+}
+
+settings_dialog::~settings_dialog()
+{
 }
 
 void settings_dialog::EnhanceSlider(emu_settings_type settings_type, QSlider* slider, QLabel* label, const QString& label_text) const
@@ -2313,6 +2413,13 @@ void settings_dialog::AddStylesheets()
 	ui->combo_stylesheets->clear();
 
 	ui->combo_stylesheets->addItem(tr("None", "Stylesheets"), gui::NoStylesheet);
+
+	for (const QString& key : QStyleFactory::keys())
+	{
+		// Variant value: "native (<style>)"
+		ui->combo_stylesheets->addItem(tr("Native (%0)", "Stylesheets").arg(key), QString("%0 (%1)").arg(gui::NativeStylesheet, key));
+	}
+
 	ui->combo_stylesheets->addItem(tr("Default (Bright)", "Stylesheets"), gui::DefaultStylesheet);
 
 	for (const QString& entry : m_gui_settings->GetStylesheetEntries())
@@ -2332,7 +2439,7 @@ void settings_dialog::AddStylesheets()
 	}
 	else
 	{
-		cfg_log.warning("Trying to set an invalid stylesheets index: %d (%s)", index, sstr(m_current_stylesheet));
+		cfg_log.warning("Trying to set an invalid stylesheets index: %d (%s)", index, m_current_stylesheet);
 	}
 }
 

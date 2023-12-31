@@ -96,7 +96,7 @@ namespace rsx
 			}
 		}
 
-		void user_list_dialog::on_button_pressed(pad_button button_press)
+		void user_list_dialog::on_button_pressed(pad_button button_press, bool is_auto_repeat)
 		{
 			if (fade_animation.active) return;
 
@@ -153,7 +153,8 @@ namespace rsx
 					close(true, true);
 				};
 			}
-			else
+			// Play a sound unless this is a fast auto repeat which would induce a nasty noise
+			else if (!is_auto_repeat || m_auto_repeat_ms_interval >= m_auto_repeat_ms_interval_default)
 			{
 				Emu.GetCallbacks().play_sound(fs::get_config_dir() + "sounds/snd_cursor.wav");
 			}
@@ -239,7 +240,7 @@ namespace rsx
 			this->on_close = std::move(on_close);
 			visible = true;
 
-			const auto notify = std::make_shared<atomic_t<bool>>(false);
+			const auto notify = std::make_shared<atomic_t<u32>>(0);
 			auto& overlayman = g_fxo->get<display_manager>();
 
 			overlayman.attach_thread_input(
@@ -249,7 +250,7 @@ namespace rsx
 
 			while (!Emu.IsStopped() && !*notify)
 			{
-				notify->wait(false, atomic_wait_timeout{1'000'000});
+				notify->wait(0, atomic_wait_timeout{1'000'000});
 			}
 
 			return CELL_OK;

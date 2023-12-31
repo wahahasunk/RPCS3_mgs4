@@ -11,6 +11,7 @@
 #include "localized_emu.h"
 #include "qt_camera_handler.h"
 #include "qt_music_handler.h"
+#include "rpcs3_version.h"
 
 #ifdef WITH_DISCORD_RPC
 #include "_discord_utils.h"
@@ -29,11 +30,14 @@
 
 #include <QScreen>
 #include <QFontDatabase>
+#include <QLayout>
 #include <QLibraryInfo>
 #include <QDirIterator>
 #include <QFileInfo>
-#include <QSound>
 #include <QMessageBox>
+#include <QTextDocument>
+#include <QStyleFactory>
+#include <QStyleHints>
 
 #include <clocale>
 
@@ -45,6 +49,8 @@
 #endif
 
 LOG_CHANNEL(gui_log, "GUI");
+
+[[noreturn]] void report_fatal_error(std::string_view text, bool is_html = false, bool include_help_text = true);
 
 gui_application::gui_application(int& argc, char** argv) : QApplication(argc, argv)
 {
@@ -62,6 +68,37 @@ bool gui_application::Init()
 #ifndef __APPLE__
 	setWindowIcon(QIcon(":/rpcs3.ico"));
 #endif
+
+	if (!rpcs3::is_release_build() && !rpcs3::is_local_build())
+	{
+		const std::string_view branch_name = rpcs3::get_full_branch();
+		gui_log.warning("Experimental Build Warning! Build origin: %s", branch_name);
+
+		QMessageBox msg;
+		msg.setWindowModality(Qt::WindowModal);
+		msg.setWindowTitle(tr("Experimental Build Warning"));
+		msg.setIcon(QMessageBox::Critical);
+		msg.setTextFormat(Qt::RichText);
+		msg.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+		msg.setDefaultButton(QMessageBox::No);
+		msg.setText(tr(
+			R"(
+				<p style="white-space: nowrap;">
+					Please understand that this build is not an official RPCS3 release.<br>
+					This build contains changes that may break games, or even <b>damage</b> your data.<br>
+					We recommend to download and use the official build from the <a %0 href='https://rpcs3.net/download'>RPCS3 website</a>.<br><br>
+					Build origin: %1<br>
+					Do you wish to use this build anyway?
+				</p>
+			)"
+		).arg(gui::utils::get_link_style()).arg(Qt::convertFromPlainText(branch_name.data())));
+		msg.layout()->setSizeConstraint(QLayout::SetFixedSize);
+
+		if (msg.exec() == QMessageBox::No)
+		{
+			return false;
+		}
+	}
 
 	m_emu_settings.reset(new emu_settings());
 	m_gui_settings.reset(new gui_settings());
@@ -102,8 +139,15 @@ bool gui_application::Init()
 
 	if (m_gui_settings->GetValue(gui::ib_show_welcome).toBool())
 	{
-		welcome_dialog* welcome = new welcome_dialog(m_gui_settings);
+		welcome_dialog* welcome = new welcome_dialog(m_gui_settings, false);
 		welcome->exec();
+
+		if (welcome->does_user_want_dark_theme())
+		{
+			m_gui_settings->SetValue(gui::m_currentStylesheet, "Darker Style by TheMitoSan");
+		}
+
+		m_gui_settings->sync();
 	}
 
 	// Check maxfiles
@@ -138,7 +182,7 @@ void gui_application::SwitchTranslator(QTranslator& translator, const QString& f
 	// remove the old translator
 	removeTranslator(&translator);
 
-	const QString lang_path = QLibraryInfo::location(QLibraryInfo::TranslationsPath) + QStringLiteral("/");
+	const QString lang_path = QLibraryInfo::path(QLibraryInfo::TranslationsPath) + QStringLiteral("/");
 	const QString file_path = lang_path + filename;
 
 	if (QFileInfo(file_path).isFile())
@@ -152,7 +196,7 @@ void gui_application::SwitchTranslator(QTranslator& translator, const QString& f
 	else if (const QString default_code = QLocale(QLocale::English).bcp47Name(); language_code != default_code)
 	{
 		// show error, but ignore default case "en", since it is handled in source code
-		gui_log.error("No translation file found in: %s", file_path.toStdString());
+		gui_log.error("No translation file found in: %s", file_path);
 
 		// reset current language to default "en"
 		m_language_code = default_code;
@@ -194,27 +238,34 @@ void gui_application::LoadLanguage(const QString& language_code)
 
 	m_gui_settings->SetValue(gui::loc_language, m_language_code);
 
-	gui_log.notice("Current language changed to %s (%s)", locale_name.toStdString(), language_code.toStdString());
+	gui_log.notice("Current language changed to %s (%s)", locale_name, language_code);
 }
 
 QStringList gui_application::GetAvailableLanguageCodes()
 {
 	QStringList language_codes;
 
-	const QString language_path = QLibraryInfo::location(QLibraryInfo::TranslationsPath);
+	const QString language_path = QLibraryInfo::path(QLibraryInfo::TranslationsPath);
 
 	if (QFileInfo(language_path).isDir())
 	{
 		const QDir dir(language_path);
-		const QStringList filenames = dir.entryList(QStringList("*.qm"));
+		const QStringList filenames = dir.entryList(QStringList("rpcs3_*.qm"));
 
-		for (const auto& filename : filenames)
+		for (const QString& filename : filenames)
 		{
 			QString language_code = filename;                        // "rpcs3_en.qm"
 			language_code.truncate(language_code.lastIndexOf('.'));  // "rpcs3_en"
 			language_code.remove(0, language_code.indexOf('_') + 1); // "en"
 
-			language_codes << language_code;
+			if (language_codes.contains(language_code))
+			{
+				gui_log.error("Found duplicate language '%s' (%s)", language_code, filename);
+			}
+			else
+			{
+				language_codes << language_code;
+			}
 		}
 	}
 
@@ -228,6 +279,7 @@ void gui_application::InitializeConnects()
 	connect(this, &gui_application::OnEmulatorStop, this, &gui_application::StopPlaytime);
 	connect(this, &gui_application::OnEmulatorPause, this, &gui_application::StopPlaytime);
 	connect(this, &gui_application::OnEmulatorResume, this, &gui_application::StartPlaytime);
+	connect(this, &QGuiApplication::applicationStateChanged, this, &gui_application::OnAppStateChanged);
 
 	if (m_main_window)
 	{
@@ -242,6 +294,8 @@ void gui_application::InitializeConnects()
 		connect(this, &gui_application::OnEmulatorReady, m_main_window, &main_window::OnEmuReady);
 		connect(this, &gui_application::OnEnableDiscEject, m_main_window, &main_window::OnEnableDiscEject);
 		connect(this, &gui_application::OnEnableDiscInsert, m_main_window, &main_window::OnEnableDiscInsert);
+
+		connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this, [this](){ OnChangeStyleSheetRequest(); });
 	}
 
 #ifdef WITH_DISCORD_RPC
@@ -273,7 +327,9 @@ std::unique_ptr<gs_frame> gui_application::get_gs_frame()
 
 	auto [w, h] = ::at32(g_video_out_resolution_map, g_cfg.video.resolution);
 
-	if (m_gui_settings->GetValue(gui::gs_resize).toBool())
+	const bool resize_game_window = m_gui_settings->GetValue(gui::gs_resize).toBool();
+
+	if (resize_game_window)
 	{
 		if (m_gui_settings->GetValue(gui::gs_resize_manual).toBool())
 		{
@@ -293,11 +349,12 @@ std::unique_ptr<gs_frame> gui_application::get_gs_frame()
 
 	// Use screen index set by CLI argument
 	int screen_index = m_game_screen_index;
+	const int last_screen_index = m_gui_settings->GetValue(gui::gs_screen).toInt();
 
-	// In no-gui mode: use last used screen if no CLI index was set
-	if (screen_index < 0 && !m_main_window)
+	// Use last used screen if no CLI index was set
+	if (screen_index < 0)
 	{
-		screen_index = m_gui_settings->GetValue(gui::gs_screen).toInt();
+		screen_index = last_screen_index;
 	}
 
 	// Try to find the specified screen
@@ -328,7 +385,21 @@ std::unique_ptr<gs_frame> gui_application::get_gs_frame()
 		base_geometry = m_main_window ? m_main_window->frameGeometry() : primaryScreen()->geometry();
 	}
 
-	const QRect frame_geometry = gui::utils::create_centered_window_geometry(screen, base_geometry, w, h);
+	// Use saved geometry if possible. Ignore this if the last used screen is different than the requested screen.
+	QRect frame_geometry = screen_index != last_screen_index ? QRect{} : m_gui_settings->GetValue(gui::gs_geometry).value<QRect>();
+
+	if (frame_geometry.isNull() || frame_geometry.isEmpty())
+	{
+		// Center above main window or inside screen if the saved geometry is invalid
+		frame_geometry = gui::utils::create_centered_window_geometry(screen, base_geometry, w, h);
+	}
+	else if (resize_game_window)
+	{
+		// Apply size override to our saved geometry if needed
+		frame_geometry.setSize(QSize(w, h));
+	}
+
+	// Load AppIcon
 	const QIcon app_icon = m_main_window ? m_main_window->GetAppIcon() : gui::utils::get_app_icon_from_path(Emu.GetBoot(), Emu.GetTitleID());
 
 	gs_frame* frame = nullptr;
@@ -379,7 +450,7 @@ void gui_application::InitializeCallbacks()
 
 		return false;
 	};
-	callbacks.call_from_main_thread = [this](std::function<void()> func, atomic_t<bool>* wake_up)
+	callbacks.call_from_main_thread = [this](std::function<void()> func, atomic_t<u32>* wake_up)
 	{
 		RequestCallFromMainThread(std::move(func), wake_up);
 	};
@@ -503,14 +574,96 @@ void gui_application::InitializeCallbacks()
 		return localized_emu::get_u32string(id, args);
 	};
 
-	callbacks.play_sound = [](const std::string& path)
+	callbacks.play_sound = [this](const std::string& path)
 	{
-		Emu.CallFromMainThread([path]()
+		Emu.CallFromMainThread([this, path]()
 		{
 			if (fs::is_file(path))
 			{
-				QSound::play(qstr(path));
+				m_sound_effect.stop();
+				m_sound_effect.setSource(QUrl::fromLocalFile(qstr(path)));
+				m_sound_effect.setVolume(g_cfg.audio.volume * 0.01f);
+				m_sound_effect.setLoopCount(1);
+				m_sound_effect.play();
 			}
+		});
+	};
+
+	if (m_show_gui) // If this is false, we already have a fallback in the main_application.
+	{
+		callbacks.on_install_pkgs = [this](const std::vector<std::string>& pkgs)
+		{
+			ensure(m_main_window);
+			ensure(!pkgs.empty());
+			QStringList pkg_list;
+			for (const std::string& pkg : pkgs)
+			{
+				pkg_list << QString::fromStdString(pkg);
+			}
+			return m_main_window->InstallPackages(pkg_list, true);
+		};
+	}
+
+	callbacks.on_emulation_stop_no_response = [this](std::shared_ptr<atomic_t<bool>> closed_successfully, int seconds_waiting_already)
+	{
+		const std::string terminate_message = tr("Stopping emulator took too long."
+			"\nSome thread has probably deadlocked. Aborting.").toStdString();
+
+		if (!closed_successfully)
+		{
+			report_fatal_error(terminate_message);
+		}
+
+		Emu.CallFromMainThread([this, closed_successfully, seconds_waiting_already, terminate_message]
+		{
+			const auto seconds = std::make_shared<int>(seconds_waiting_already);
+
+			QMessageBox* mb = new QMessageBox();
+			mb->setWindowTitle(tr("PS3 Game/Application Is Unresponsive"));
+			mb->setIcon(QMessageBox::Critical);
+			mb->setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+			mb->setDefaultButton(QMessageBox::No);
+			mb->button(QMessageBox::Yes)->setText(tr("Terminate RPCS3"));
+			mb->button(QMessageBox::No)->setText(tr("Keep Waiting"));
+
+			QString text_base = tr("Waiting for %0 second(s) already to stop emulation without success."
+			                       "\nKeep waiting or terminate RPCS3 unsafely at your own risk?");
+
+			mb->setText(text_base.arg(10));
+			mb->layout()->setSizeConstraint(QLayout::SetFixedSize);
+			mb->setAttribute(Qt::WA_DeleteOnClose);
+
+			QTimer* update_timer = new QTimer(mb);
+
+			connect(update_timer, &QTimer::timeout, [mb, seconds, text_base, closed_successfully]()
+			{
+				*seconds += 1;
+				mb->setText(text_base.arg(*seconds));
+
+				if (*closed_successfully)
+				{
+					mb->reject();
+				}
+			});
+
+			connect(mb, &QDialog::accepted, mb, [closed_successfully, terminate_message]
+			{
+				if (!*closed_successfully)
+				{
+					report_fatal_error(terminate_message);
+				}
+			});
+
+			mb->open();
+			update_timer->start(1000);
+		});
+	};
+
+	callbacks.add_breakpoint = [this](u32 addr)
+	{
+		Emu.BlockingCallFromMainThread([this, addr]()
+		{
+			m_main_window->OnAddBreakpoint(addr);
 		});
 	};
 
@@ -597,13 +750,73 @@ void gui_application::OnChangeStyleSheetRequest()
 
 	const QString stylesheet_name = m_gui_settings->GetValue(gui::m_currentStylesheet).toString();
 
+	// Determine default style
+	if (m_default_style.isEmpty())
+	{
+		// Use the initial style as default style
+		if (const QStyle* style = QApplication::style())
+		{
+			m_default_style = style->name();
+			gui_log.notice("Determined '%s' as default style", m_default_style);
+		}
+
+		// Fallback to the first style, which is supposed to be the default style according to the Qt docs.
+		if (m_default_style.isEmpty())
+		{
+			if (const QStringList styles = QStyleFactory::keys(); !styles.empty())
+			{
+				m_default_style = styles.front();
+				gui_log.notice("Determined '%s' as default style (first style available)", m_default_style);
+			}
+		}
+	}
+
+	// Reset style to default before doing anything else, or we will get unexpected effects in custom stylesheets.
+	if (QStyle* style = QStyleFactory::create(m_default_style))
+	{
+		setStyle(style);
+	}
+
+	const auto match_native_style = [&stylesheet_name]() -> QString
+	{
+		// Search for "native (<style>)"
+		static const QRegularExpression expr(gui::NativeStylesheet + " \\((?<style>.*)\\)");
+		const QRegularExpressionMatch match = expr.match(stylesheet_name);
+
+		if (match.hasMatch())
+		{
+			return match.captured("style");
+		}
+
+		return {};
+	};
+
+	gui_log.notice("Changing stylesheet to '%s'", stylesheet_name);
+	gui::custom_stylesheet_active = false;
+
 	if (stylesheet_name.isEmpty() || stylesheet_name == gui::DefaultStylesheet)
 	{
+		gui_log.notice("Using default stylesheet");
 		setStyleSheet(gui::stylesheets::default_style_sheet);
+		gui::custom_stylesheet_active = true;
 	}
 	else if (stylesheet_name == gui::NoStylesheet)
 	{
+		gui_log.notice("Using empty style");
 		setStyleSheet("/* none */");
+	}
+	else if (const QString native_style = match_native_style(); !native_style.isEmpty())
+	{
+		if (QStyle* style = QStyleFactory::create(native_style))
+		{
+			gui_log.notice("Using native style '%s'", native_style);
+			setStyleSheet("/* none */");
+			setStyle(style);
+		}
+		else
+		{
+			gui_log.error("Failed to set stylesheet: Native style '%s' not available", native_style);
+		}
 	}
 	else
 	{
@@ -660,9 +873,11 @@ void gui_application::OnChangeStyleSheetRequest()
 		}
 		else
 		{
-			gui_log.error("Could not find stylesheet '%s'. Using default.", stylesheet_name.toStdString());
+			gui_log.error("Could not find stylesheet '%s'. Using default.", stylesheet_name);
 			setStyleSheet(gui::stylesheets::default_style_sheet);
 		}
+
+		gui::custom_stylesheet_active = true;
 	}
 
 	gui::stylesheet = styleSheet();
@@ -676,7 +891,7 @@ void gui_application::OnChangeStyleSheetRequest()
 /**
  * Using connects avoids timers being unable to be used in a non-qt thread. So, even if this looks stupid to just call func, it's succinct.
  */
-void gui_application::CallFromMainThread(const std::function<void()>& func, atomic_t<bool>* wake_up)
+void gui_application::CallFromMainThread(const std::function<void()>& func, atomic_t<u32>* wake_up)
 {
 	func();
 
@@ -685,4 +900,77 @@ void gui_application::CallFromMainThread(const std::function<void()>& func, atom
 		*wake_up = true;
 		wake_up->notify_one();
 	}
+}
+
+void gui_application::OnAppStateChanged(Qt::ApplicationState state)
+{
+	// Invalidate previous delayed pause call (even when the setting is off because it is dynamic)
+	m_pause_delayed_tag++;
+
+	if (!g_cfg.misc.autopause)
+	{
+		return;
+	}
+
+	const auto emu_state = Emu.GetStatus();
+	const bool is_active = state == Qt::ApplicationActive;
+
+	if (emu_state != system_state::paused && emu_state != system_state::running)
+	{
+		return;
+	}
+
+	const bool is_paused = emu_state == system_state::paused;
+
+	if (is_active != is_paused)
+	{
+		// Nothing to do (either paused and this is focus-out event or running and this is a focus-in event)
+		// Invalidate data
+		m_is_pause_on_focus_loss_active = false;
+		m_emu_focus_out_emulation_id = Emulator::stop_counter_t{};
+		return;
+	}
+
+	if (is_paused)
+	{
+		// Check if Emu.Resume() or Emu.Kill() has not been called since
+		if (m_is_pause_on_focus_loss_active && m_pause_amend_time_on_focus_loss == Emu.GetPauseTime() && m_emu_focus_out_emulation_id == Emu.GetEmulationIdentifier())
+		{
+			m_is_pause_on_focus_loss_active = false;
+			Emu.Resume();
+		}
+
+		return;
+	}
+
+	// Gather validation data
+	m_emu_focus_out_emulation_id = Emu.GetEmulationIdentifier();
+
+	auto pause_callback = [this, delayed_tag = m_pause_delayed_tag]()
+	{
+		// Check if Emu.Kill() has not been called since
+		if (applicationState() != Qt::ApplicationActive && Emu.IsRunning() &&
+		    m_emu_focus_out_emulation_id == Emu.GetEmulationIdentifier() &&
+		    delayed_tag == m_pause_delayed_tag &&
+			!m_is_pause_on_focus_loss_active)
+		{
+			if (Emu.Pause())
+			{
+				// Gather validation data
+				m_pause_amend_time_on_focus_loss = Emu.GetPauseTime();
+				m_emu_focus_out_emulation_id = Emu.GetEmulationIdentifier();
+				m_is_pause_on_focus_loss_active = true;
+			}
+		}
+	};
+
+	if (state == Qt::ApplicationSuspended)
+	{
+		// Must be invoked now (otherwise it may not happen later)
+		pause_callback();
+		return;
+	}
+
+	// Delay pause so it won't immediately pause the emulated application
+	QTimer::singleShot(1000, this, pause_callback);
 }

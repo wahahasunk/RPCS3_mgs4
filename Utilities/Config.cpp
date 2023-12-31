@@ -7,6 +7,12 @@
 
 LOG_CHANNEL(cfg_log, "CFG");
 
+template <>
+void fmt_class_string<cfg::node>::format(std::string& out, u64 arg)
+{
+ 	out += get_object(arg).to_string();
+}
+
 namespace cfg
 {
 	_base::_base(type _type)
@@ -23,9 +29,9 @@ namespace cfg
 	{
 		for (const auto& node : owner->m_nodes)
 		{
-			if (node->get_name() == name)
+			if (node->get_name() == m_name)
 			{
-				cfg_log.fatal("Node already exists: %s", name);
+				cfg_log.fatal("Node already exists: %s", m_name);
 			}
 		}
 
@@ -41,6 +47,17 @@ namespace cfg
 	bool _base::from_list(std::vector<std::string>&&)
 	{
 		cfg_log.fatal("cfg::_base::from_list() purecall");
+		return false;
+	}
+
+	bool _base::save(std::string_view cfg_name) const
+	{
+		if (fs::pending_file cfg_file(cfg_name); !!cfg_file.file)
+		{
+			cfg_file.file.write(to_string());
+			return cfg_file.commit();
+		}
+
 		return false;
 	}
 
@@ -61,7 +78,7 @@ bool try_to_int64(s64* out, std::string_view value, s64 min, s64 max)
 {
 	if (value.empty())
 	{
-		if (out) cfg_log.error("cfg::try_to_uint64(): called with an empty string");
+		if (out) cfg_log.error("cfg::try_to_int64(): called with an empty string");
 		return false;
 	}
 

@@ -8,6 +8,8 @@
 #include "vkutils/image_helpers.h"
 
 #include "../Common/texture_cache.h"
+#include "../Common/tiled_dma_copy.hpp"
+
 #include "Emu/Cell/timers.hpp"
 
 #include <memory>
@@ -28,6 +30,7 @@ namespace vk
 		using image_view_type         = vk::image_view*;
 		using image_storage_type      = vk::image;
 		using texture_format          = VkFormat;
+		using viewable_image_type     = vk::viewable_image*;
 	};
 
 	class cached_texture_section : public rsx::cached_texture_section<vk::cached_texture_section, vk::texture_cache_traits>
@@ -153,7 +156,7 @@ namespace vk
 			return vram_texture->get_view(0xAAE4, rsx::default_remap_vector);
 		}
 
-		vk::image* get_raw_texture()
+		vk::viewable_image* get_raw_texture()
 		{
 			return managed_texture.get();
 		}
@@ -284,7 +287,38 @@ namespace vk
 
 			// Calculate smallest range to flush - for framebuffers, the raster region is enough
 			const auto range = (context == rsx::texture_upload_context::framebuffer_storage) ? get_section_range() : get_confirmed_range();
-			vk::flush_dma(range.start, range.length());
+			auto flush_length = range.length();
+
+			const auto tiled_region = rsx::get_current_renderer()->get_tiled_memory_region(range);
+			if (tiled_region)
+			{
+				const auto available_tile_size = tiled_region.tile->size - (range.start - tiled_region.base_address);
+				const auto max_content_size = tiled_region.tile->pitch * utils::align(height, 64);
+				flush_length = std::min(max_content_size, available_tile_size);
+			}
+
+			vk::flush_dma(range.start, flush_length);
+
+#if DEBUG_DMA_TILING
+			// Are we a tiled region?
+			if (const auto tiled_region = rsx::get_current_renderer()->get_tiled_memory_region(range))
+			{
+				auto real_data = vm::get_super_ptr<u8>(range.start);
+				auto out_data = std::vector<u8>(tiled_region.tile->size);
+				rsx::tile_texel_data<u32>(
+					out_data.data(),
+					real_data,
+					tiled_region.base_address,
+					range.start - tiled_region.base_address,
+					tiled_region.tile->size,
+					tiled_region.tile->bank,
+					tiled_region.tile->pitch,
+					width,
+					height
+				);
+				std::memcpy(real_data, out_data.data(), flush_length);
+			}
+#endif
 
 			if (is_swizzled())
 			{
@@ -477,7 +511,7 @@ namespace vk
 
 		vk::viewable_image* upload_image_simple(vk::command_buffer& cmd, VkFormat format, u32 address, u32 width, u32 height, u32 pitch);
 
-		bool blit(rsx::blit_src_info& src, rsx::blit_dst_info& dst, bool interpolate, vk::surface_cache& m_rtts, vk::command_buffer& cmd);
+		bool blit(const rsx::blit_src_info& src, const rsx::blit_dst_info& dst, bool interpolate, vk::surface_cache& m_rtts, vk::command_buffer& cmd);
 
 		u32 get_unreleased_textures_count() const override;
 

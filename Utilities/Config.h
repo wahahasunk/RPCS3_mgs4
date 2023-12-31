@@ -6,6 +6,7 @@
 #include "util/atomic.hpp"
 #include "util/shared_ptr.hpp"
 
+#include <algorithm>
 #include <utility>
 #include <string>
 #include <vector>
@@ -100,6 +101,8 @@ namespace cfg
 
 		// Set multiple values. Implementation-specific, optional.
 		virtual bool from_list(std::vector<std::string>&&);
+
+		bool save(std::string_view cfg_name) const;
 	};
 
 	// Config tree node which contains another nodes
@@ -224,6 +227,11 @@ namespace cfg
 		T get() const
 		{
 			return m_value;
+		}
+
+		T get_default() const
+		{
+			return def;
 		}
 
 		void set(T value)

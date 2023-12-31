@@ -1,6 +1,11 @@
+#include "VKCompute.h"
+#include "VKDMA.h"
 #include "VKRenderTargets.h"
 #include "VKResourceManager.h"
 #include "Emu/RSX/rsx_methods.h"
+#include "Emu/RSX/RSXThread.h"
+
+#include "Emu/RSX/Common/tiled_dma_copy.hpp"
 
 namespace vk
 {
@@ -30,7 +35,7 @@ namespace vk
 		}
 		else if (total_device_memory >= 1024)
 		{
-			quota = 768;
+			quota = std::max<u64>(512, (total_device_memory * 30) / 100);
 		}
 		else if (total_device_memory >= 768)
 		{
@@ -47,12 +52,6 @@ namespace vk
 
 	bool surface_cache::can_collapse_surface(const std::unique_ptr<vk::render_target>& surface, rsx::problem_severity severity)
 	{
-		if (surface->samples() == 1)
-		{
-			// No internal allocations needed for non-MSAA images
-			return true;
-		}
-
 		if (severity < rsx::problem_severity::fatal &&
 			vk::vmm_determine_memory_load_severity() < rsx::problem_severity::fatal)
 		{
@@ -61,27 +60,21 @@ namespace vk
 		}
 
 		// Check if we need to do any allocations. Do not collapse in such a situation otherwise
-		if (!surface->resolve_surface)
+		if (surface->samples() > 1 && !surface->resolve_surface)
 		{
 			return false;
 		}
-		else
+
+		// Resolve target does exist. Scan through the entire collapse chain
+		for (auto& region : surface->old_contents)
 		{
-			// Resolve target does exist. Scan through the entire collapse chain
-			for (auto& region : surface->old_contents)
+			// FIXME: This is just lazy
+			auto proxy = std::unique_ptr<vk::render_target>(vk::as_rtt(region.source));
+			const bool collapsible = can_collapse_surface(proxy, severity);
+			proxy.release();
+
+			if (!collapsible)
 			{
-				if (region.source->samples() == 1)
-				{
-					// Not MSAA
-					continue;
-				}
-
-				if (vk::as_rtt(region.source)->resolve_surface)
-				{
-					// Has a resolve target.
-					continue;
-				}
-
 				return false;
 			}
 		}
@@ -135,9 +128,9 @@ namespace vk
 			// 1. Spill an strip any 'invalidated resources'. At this point it doesn't matter and we donate to the resolve cache which is a plus.
 			for (auto& surface : invalidated_resources)
 			{
-				if (!surface->value)
+				if (!surface->value && !surface->resolve_surface)
 				{
-					ensure(!surface->resolve_surface);
+					// Unspilled resources can have no value but have a resolve surface used for read
 					continue;
 				}
 
@@ -180,20 +173,15 @@ namespace vk
 		return any_released;
 	}
 
-	void surface_cache::free_invalidated(vk::command_buffer& cmd, rsx::problem_severity memory_pressure)
+	void surface_cache::trim(vk::command_buffer& cmd, rsx::problem_severity memory_pressure)
 	{
-		// Do not allow more than 300M of RSX memory to be used by RTTs.
-		// The actual boundary is 256M but we need to give some overallocation for performance reasons.
-		if (check_memory_usage(300 * 0x100000))
+		run_cleanup_internal(cmd, rsx::problem_severity::moderate, 300, [](vk::command_buffer& cmd)
 		{
 			if (!cmd.is_recording())
 			{
 				cmd.begin();
 			}
-
-			const auto severity = std::max(memory_pressure, rsx::problem_severity::moderate);
-			handle_memory_pressure(cmd, severity);
-		}
+		});
 
 		const u64 last_finished_frame = vk::get_last_completed_frame_id();
 		invalidated_resources.remove_if([&](std::unique_ptr<vk::render_target>& rtt)
@@ -207,19 +195,22 @@ namespace vk
 				return false;
 			}
 
-			if (memory_pressure >= rsx::problem_severity::severe)
-			{
-				if (rtt->resolve_surface)
-				{
-					// We do not need to keep resolve targets around if things are bad.
-					vk::get_resource_manager()->dispose(rtt->resolve_surface);
-				}
-			}
-
 			if (rtt->frame_tag >= last_finished_frame)
 			{
 				// RTT itself still in use by the frame.
 				return false;
+			}
+
+			if (!rtt->old_contents.empty())
+			{
+				rtt->clear_rw_barrier();
+			}
+
+			if (rtt->resolve_surface && memory_pressure >= rsx::problem_severity::moderate)
+			{
+				// We do not need to keep resolve targets around.
+				// TODO: We should surrender this to an image cache immediately for reuse.
+				vk::get_resource_manager()->dispose(rtt->resolve_surface);
 			}
 
 			switch (memory_pressure)
@@ -231,6 +222,7 @@ namespace vk
 			case rsx::problem_severity::severe:
 			case rsx::problem_severity::fatal:
 				// We're almost dead anyway. Remove forcefully.
+				vk::get_resource_manager()->dispose(rtt);
 				return true;
 			default:
 				fmt::throw_exception("Unreachable");
@@ -536,8 +528,6 @@ namespace vk
 
 	bool render_target::spill(vk::command_buffer& cmd, std::vector<std::unique_ptr<vk::viewable_image>>& resolve_cache)
 	{
-		ensure(value);
-
 		u64 element_size;
 		switch (const auto fmt = format())
 		{
@@ -556,6 +546,7 @@ namespace vk
 		vk::viewable_image* src = nullptr;
 		if (samples() == 1) [[likely]]
 		{
+			ensure(value);
 			src = this;
 		}
 		else if (resolve_surface)
@@ -692,10 +683,50 @@ namespace vk
 		subres.depth = 1;
 		subres.data = { vm::get_super_ptr<const std::byte>(base_addr), static_cast<std::span<const std::byte>::size_type>(rsx_pitch * surface_height * samples_y) };
 
+		const auto range = get_memory_range();
+		rsx::flags32_t upload_flags = upload_contents_inline;
+		u32 heap_align = rsx_pitch;
+
+#if DEBUG_DMA_TILING
+		std::vector<u8> ext_data;
+#endif
+
+		if (auto tiled_region = rsx::get_current_renderer()->get_tiled_memory_region(range))
+		{
+#if DEBUG_DMA_TILING
+			auto real_data = vm::get_super_ptr<u8>(range.start);
+			ext_data.resize(tiled_region.tile->size);
+			auto detile_func = get_bpp() == 4
+				? rsx::detile_texel_data32
+				: rsx::detile_texel_data16;
+
+			detile_func(
+				ext_data.data(),
+				real_data,
+				tiled_region.base_address,
+				range.start - tiled_region.base_address,
+				tiled_region.tile->size,
+				tiled_region.tile->bank,
+				tiled_region.tile->pitch,
+				subres.width_in_block,
+				subres.height_in_block
+			);
+			subres.data = std::span(ext_data);
+#else
+			const auto [scratch_buf, linear_data_scratch_offset] = vk::detile_memory_block(cmd, tiled_region, range, subres.width_in_block, subres.height_in_block, get_bpp());
+
+			// FIXME: !!EVIL!!
+			subres.data = { scratch_buf, linear_data_scratch_offset };
+			subres.pitch_in_block = subres.width_in_block;
+			upload_flags |= source_is_gpu_resident;
+			heap_align = subres.width_in_block * get_bpp();
+#endif
+		}
+
 		if (g_cfg.video.resolution_scale_percent == 100 && spp == 1) [[likely]]
 		{
 			push_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-			vk::upload_image(cmd, this, { subres }, get_gcm_format(), is_swizzled, 1, aspect(), upload_heap, rsx_pitch, upload_contents_inline);
+			vk::upload_image(cmd, this, { subres }, get_gcm_format(), is_swizzled, 1, aspect(), upload_heap, heap_align, upload_flags);
 			pop_layout(cmd);
 		}
 		else
@@ -716,22 +747,29 @@ namespace vk
 			else
 			{
 				content = vk::get_typeless_helper(format(), format_class(), subres.width_in_block, subres.height_in_block);
-				content->change_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+				if (content->current_layout == VK_IMAGE_LAYOUT_UNDEFINED)
+				{
+					content->change_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+				}
+				content->push_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 			}
 
 			// Load Cell data into temp buffer
-			vk::upload_image(cmd, content, { subres }, get_gcm_format(), is_swizzled, 1, aspect(), upload_heap, rsx_pitch, upload_contents_inline);
+			vk::upload_image(cmd, content, { subres }, get_gcm_format(), is_swizzled, 1, aspect(), upload_heap, heap_align, upload_flags);
 
 			// Write into final image
 			if (content != final_dst)
 			{
 				// Avoid layout push/pop on scratch memory by setting explicit layout here
-				content->change_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+				content->pop_layout(cmd);
+				content->push_layout(cmd, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
 				vk::copy_scaled_image(cmd, content, final_dst,
 					{ 0, 0, subres.width_in_block, subres.height_in_block },
 					{ 0, 0, static_cast<s32>(final_dst->width()), static_cast<s32>(final_dst->height()) },
 					1, true, aspect() == VK_IMAGE_ASPECT_COLOR_BIT ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+
+				content->pop_layout(cmd);
 			}
 
 			final_dst->pop_layout(cmd);

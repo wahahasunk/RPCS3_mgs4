@@ -130,6 +130,7 @@ static fs::error to_error(DWORD e)
 	case ERROR_NOT_READY: return fs::error::noent;
 	case ERROR_FILENAME_EXCED_RANGE: return fs::error::toolong;
 	case ERROR_DISK_FULL: return fs::error::nospace;
+	case ERROR_NOT_SAME_DEVICE: return fs::error::xdev;
 	default: return fs::error::unknown;
 	}
 }
@@ -172,6 +173,7 @@ static fs::error to_error(int e)
 	case EROFS: return fs::error::readonly;
 	case EISDIR: return fs::error::isdir;
 	case ENOSPC: return fs::error::nospace;
+	case EXDEV: return fs::error::xdev;
 	default: return fs::error::unknown;
 	}
 }
@@ -225,10 +227,17 @@ namespace fs
 	{
 	}
 
-	[[noreturn]] stat_t file_base::stat()
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4646)
+#endif
+	[[noreturn]] stat_t file_base::get_stat()
 	{
-		fmt::throw_exception("fs::file::stat() not supported.");
+		fmt::throw_exception("fs::file::get_stat() not supported.");
 	}
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 	void file_base::sync()
 	{
@@ -242,6 +251,11 @@ namespace fs
 #else
 		return -1;
 #endif
+	}
+
+	file_id file_base::get_id()
+	{
+		return {};
 	}
 
 	u64 file_base::write_gather(const iovec_clone* buffers, u64 buf_count)
@@ -270,6 +284,66 @@ namespace fs
 		}
 
 		return this->write(buf.get(), total);
+	}
+
+	file_id::operator bool() const
+	{
+		return !type.empty() && !data.empty();
+	}
+
+	// Test if identical
+	// For example: when LHS writes one byte to a file at X offset, RHS file be able to read that exact byte at X offset)
+	bool file_id::is_mirror_of(const file_id& rhs) const
+	{
+		// If either is an invalid ID we cannot compare safely, return false
+		return rhs && type == rhs.type && data == rhs.data;
+	}
+
+	// Test if both files point to the same file
+	// For example: if a file descriptor pointing to the complete file exists and is being truncated to 0 bytes from non-
+	// -zero size state: this has to affect both RHS and LHS files.
+	bool file_id::is_coherent_with(const file_id& rhs) const
+	{
+		struct id_view
+		{
+			std::string_view type_view;
+			std::basic_string_view<u8> data_view;
+		};
+
+		id_view _rhs{rhs.type, {rhs.data.data(), rhs.data.size()}};
+		id_view _lhs{type, {data.data(), data.size()}};
+
+		// Peek through fs::file wrappers
+		auto peek_wrapppers = [](id_view& id)
+		{
+			u64 offset_count = 0;
+			constexpr auto lv2_view = "lv2_file::file_view: "sv;
+
+			for (usz pos = 0; (pos = id.type_view.find(lv2_view, pos)) != umax; pos += lv2_view.size())
+			{
+				offset_count++;
+			}
+
+			// Remove offsets data
+			id.data_view.remove_suffix(sizeof(u64) * offset_count);
+
+			// Get last category identifier
+			if (usz sep = id.type_view.rfind(": "); sep != umax)
+			{
+				id.type_view.remove_prefix(sep + 2);
+			}
+		};
+
+		peek_wrapppers(_rhs);
+		peek_wrapppers(_lhs);
+
+		// If either is an invalid ID we cannot compare safely, return false
+		if (_rhs.type_view.empty() || _rhs.data_view.empty())
+		{
+			return false;
+		}
+
+		return _rhs.type_view == _lhs.type_view && _rhs.data_view == _lhs.data_view;
 	}
 
 	dir_base::~dir_base()
@@ -384,12 +458,12 @@ shared_ptr<fs::device_base> fs::set_virtual_device(const std::string& name, shar
 	return get_device_manager().set_device(name, std::move(device));
 }
 
-std::string fs::get_parent_dir(std::string_view path, u32 levels)
+std::string_view fs::get_parent_dir_view(std::string_view path, u32 parent_level)
 {
 	std::string_view result = path;
 
 	// Number of path components to remove
-	usz to_remove = levels;
+	usz to_remove = parent_level;
 
 	while (to_remove--)
 	{
@@ -432,10 +506,10 @@ std::string fs::get_parent_dir(std::string_view path, u32 levels)
 		return "/";
 	}
 
-	return std::string{result};
+	return result;
 }
 
-bool fs::stat(const std::string& path, stat_t& info)
+bool fs::get_stat(const std::string& path, stat_t& info)
 {
 	// Ensure consistent information on failure
 	info = {};
@@ -551,13 +625,13 @@ bool fs::stat(const std::string& path, stat_t& info)
 bool fs::exists(const std::string& path)
 {
 	fs::stat_t info{};
-	return fs::stat(path, info);
+	return fs::get_stat(path, info);
 }
 
 bool fs::is_file(const std::string& path)
 {
 	fs::stat_t info{};
-	if (!fs::stat(path, info))
+	if (!fs::get_stat(path, info))
 	{
 		return false;
 	}
@@ -574,7 +648,7 @@ bool fs::is_file(const std::string& path)
 bool fs::is_dir(const std::string& path)
 {
 	fs::stat_t info{};
-	if (!fs::stat(path, info))
+	if (!fs::get_stat(path, info))
 	{
 		return false;
 	}
@@ -863,9 +937,20 @@ bool fs::copy_file(const std::string& from, const std::string& to, bool overwrit
 	if (::fcopyfile(input, output, 0, COPYFILE_ALL))
 #elif defined(__linux__) || defined(__sun)
 	// sendfile will work with non-socket output (i.e. regular file) on Linux 2.6.33+
-	off_t bytes_copied = 0;
 	struct ::stat fileinfo = { 0 };
-	if (::fstat(input, &fileinfo) == -1 || ::sendfile(output, input, &bytes_copied, fileinfo.st_size) == -1)
+	bool result = ::fstat(input, &fileinfo) != -1;
+	if (result)
+	{
+		for (off_t bytes_copied = 0; bytes_copied < fileinfo.st_size; /* Do nothing, bytes_copied is increased by sendfile. */)
+		{
+			if (::sendfile(output, input, &bytes_copied, fileinfo.st_size - bytes_copied) == -1)
+			{
+				result = false;
+				break;
+			}
+		}
+	}
+	if (!result)
 #else
 #error "Native file copy implementation is missing"
 #endif
@@ -994,7 +1079,23 @@ bool fs::utime(const std::string& path, s64 atime, s64 mtime)
 	FILETIME _mtime = from_time(mtime);
 	if (!SetFileTime(handle, nullptr, &_atime, &_mtime))
 	{
-		g_tls_error = to_error(GetLastError());
+		const DWORD last_error = GetLastError();
+		g_tls_error = to_error(last_error);
+
+		// Some filesystems fail to set a date lower than 01/01/1980 00:00:00
+		if (last_error == ERROR_INVALID_PARAMETER && (atime < 315532800 || mtime < 315532800))
+		{
+			// Try again with 01/01/1980 00:00:00
+			_atime = from_time(std::max<s64>(atime, 315532800));
+			_mtime = from_time(std::max<s64>(mtime, 315532800));
+
+			if (SetFileTime(handle, nullptr, &_atime, &_mtime))
+			{
+				CloseHandle(handle);
+				return true;
+			}
+		}
+
 		CloseHandle(handle);
 		return false;
 	}
@@ -1120,7 +1221,7 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 			CloseHandle(m_handle);
 		}
 
-		stat_t stat() override
+		stat_t get_stat() override
 		{
 			FILE_BASIC_INFO basic_info;
 			ensure(GetFileInformationByHandleEx(m_handle, FileBasicInfo, &basic_info, sizeof(FILE_BASIC_INFO))); // "file::stat"
@@ -1225,12 +1326,12 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 
 				DWORD nwritten = 0;
 				OVERLAPPED ovl{};
-				const u64 pos = m_pos;
+				const u64 pos = m_pos.fetch_add(size);
 				ovl.Offset = DWORD(pos);
 				ovl.OffsetHigh = DWORD(pos >> 32);
 				ensure(WriteFile(m_handle, data, size, &nwritten, &ovl)); // "file::write"
+				ensure(nwritten == size);
 				nwritten_sum += nwritten;
-				m_pos += nwritten;
 
 				if (nwritten < size)
 				{
@@ -1277,6 +1378,28 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 		native_handle get_handle() override
 		{
 			return m_handle;
+		}
+
+		file_id get_id() override
+		{
+			file_id id{"windows_file"};
+			id.data.resize(sizeof(FILE_ID_INFO));
+
+			FILE_ID_INFO info;
+
+			if (!GetFileInformationByHandleEx(m_handle, FileIdInfo, &info, sizeof(info)))
+			{
+				// Try GetFileInformationByHandle as a fallback
+				BY_HANDLE_FILE_INFORMATION info2;
+				ensure(GetFileInformationByHandle(m_handle, &info2));
+
+				info = {};
+				info.VolumeSerialNumber = info2.dwVolumeSerialNumber;
+				std::memcpy(&info.FileId, &info2.nFileIndexHigh, 8);
+			}
+
+			std::memcpy(id.data.data(), &info, sizeof(info));
+			return id;
 		}
 	};
 
@@ -1345,7 +1468,7 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 			::close(m_fd);
 		}
 
-		stat_t stat() override
+		stat_t get_stat() override
 		{
 			struct ::stat file_info;
 			ensure(::fstat(m_fd, &file_info) == 0); // "file::stat"
@@ -1470,6 +1593,19 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 			return m_fd;
 		}
 
+		file_id get_id() override
+		{
+			struct ::stat file_info;
+			ensure(::fstat(m_fd, &file_info) == 0); // "file::get_id"
+
+			file_id id{"unix_file"};
+			id.data.resize(sizeof(file_info.st_dev) + sizeof(file_info.st_ino));
+
+			std::memcpy(id.data.data(), &file_info.st_dev, sizeof(file_info.st_dev));
+			std::memcpy(id.data.data() + sizeof(file_info.st_dev), &file_info.st_ino, sizeof(file_info.st_ino));
+			return id;
+		}
+
 		u64 write_gather(const iovec_clone* buffers, u64 buf_count) override
 		{
 			static_assert(sizeof(iovec) == sizeof(iovec_clone), "Weird iovec size");
@@ -1495,7 +1631,7 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 
 	m_file = std::make_unique<unix_file>(fd);
 
-	if (mode & fs::isfile && !(mode & fs::write) && stat().is_directory)
+	if (mode & fs::isfile && !(mode & fs::write) && get_stat().is_directory)
 	{
 		m_file.reset();
 		g_tls_error = error::isdir;
@@ -1604,6 +1740,16 @@ fs::native_handle fs::file::get_handle() const
 #endif
 }
 
+fs::file_id fs::file::get_id() const
+{
+	if (m_file)
+	{
+		return m_file->get_id();
+	}
+
+	return {};
+}
+
 bool fs::dir::open(const std::string& path)
 {
 	if (path.empty())
@@ -1646,7 +1792,7 @@ bool fs::dir::open(const std::string& path)
 			to_utf8(info.name, found.cFileName);
 			info.is_directory = (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 			info.is_writable = (found.dwFileAttributes & FILE_ATTRIBUTE_READONLY) == 0;
-			info.size = ((u64)found.nFileSizeHigh << 32) | (u64)found.nFileSizeLow;
+			info.size = (static_cast<u64>(found.nFileSizeHigh) << 32) | static_cast<u64>(found.nFileSizeLow);
 			info.atime = to_time(found.ftLastAccessTime);
 			info.mtime = to_time(found.ftLastWriteTime);
 			info.ctime = info.mtime;
@@ -1991,13 +2137,13 @@ fs::file fs::make_gather(std::vector<fs::file> files)
 		{
 		}
 
-		fs::stat_t stat() override
+		fs::stat_t get_stat() override
 		{
 			fs::stat_t result{};
 
 			if (!files.empty())
 			{
-				result = files[0].stat();
+				result = files[0].get_stat();
 			}
 
 			result.is_directory = false;
@@ -2116,14 +2262,34 @@ fs::file fs::make_gather(std::vector<fs::file> files)
 	return result;
 }
 
-fs::pending_file::pending_file(std::string_view path)
+bool fs::pending_file::open(std::string_view path)
 {
+	file.close();
+
+	if (!m_path.empty())
+	{
+		fs::remove_file(m_path);
+	}
+
+	if (path.empty())
+	{
+		fs::g_tls_error = fs::error::noent;
+		m_dest.clear();
+		return false;
+	}
+
 	do
 	{
 		m_path = fmt::format(u8"%s/＄%s.%s.tmp", get_parent_dir(path), path.substr(path.find_last_of(fs::delim) + 1), fmt::base57(utils::get_unique_tsc()));
 
 		if (file.open(m_path, fs::create + fs::write + fs::read + fs::excl))
 		{
+#ifdef _WIN32
+			// Auto-delete pending log file
+			FILE_DISPOSITION_INFO disp;
+			disp.DeleteFileW = true;
+			SetFileInformationByHandle(file.get_handle(), FileDispositionInfo, &disp, sizeof(disp));
+#endif
 			m_dest = path;
 			break;
 		}
@@ -2131,6 +2297,8 @@ fs::pending_file::pending_file(std::string_view path)
 		m_path.clear();
 	}
 	while (fs::g_tls_error == fs::error::exist); // Only retry if failed due to existing file
+
+	return file.operator bool();
 }
 
 fs::pending_file::~pending_file()
@@ -2145,7 +2313,7 @@ fs::pending_file::~pending_file()
 
 bool fs::pending_file::commit(bool overwrite)
 {
-	if (!file || m_path.empty())
+	if (m_path.empty())
 	{
 		fs::g_tls_error = fs::error::noent;
 		return false;
@@ -2153,8 +2321,20 @@ bool fs::pending_file::commit(bool overwrite)
 
 	// The temporary file's contents must be on disk before rename
 #ifndef _WIN32
-	file.sync();
+	if (file)
+	{
+		file.sync();
+	}
+
 #endif
+
+#ifdef _WIN32
+	// Disable auto-delete
+	FILE_DISPOSITION_INFO disp;
+	disp.DeleteFileW = false;
+	SetFileInformationByHandle(file.get_handle(), FileDispositionInfo, &disp, sizeof(disp));
+#endif
+
 	file.close();
 
 #ifdef _WIN32
@@ -2239,9 +2419,19 @@ void fmt_class_string<fs::error>::format(std::string& out, u64 arg)
 		case fs::error::isdir: return "Is a directory";
 		case fs::error::toolong: return "Path too long";
 		case fs::error::nospace: return "Not enough space on the device";
+		case fs::error::xdev: return "Device mismatch";
 		case fs::error::unknown: return "Unknown system error";
 		}
 
 		return unknown;
 	});
+}
+
+template<>
+void fmt_class_string<fs::file_id>::format(std::string& out, u64 arg)
+{
+	const fs::file_id& id = get_object(arg);
+
+	// TODO: Format data
+	fmt::append(out, "{type='%s'}", id.type);
 }

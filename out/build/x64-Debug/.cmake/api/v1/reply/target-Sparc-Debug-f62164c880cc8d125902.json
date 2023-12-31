@@ -1,0 +1,43 @@
+{
+	"backtrace" : 2,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_custom_target",
+			"add_llvm_component_group"
+		],
+		"files" : 
+		[
+			"llvm/cmake/modules/AddLLVM.cmake",
+			"llvm/lib/Target/Sparc/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 1,
+				"file" : 1,
+				"line" : 1,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 747,
+				"parent" : 1
+			}
+		]
+	},
+	"id" : "Sparc::@65b1862506a693babeb1",
+	"name" : "Sparc",
+	"paths" : 
+	{
+		"build" : "3rdparty/llvm_build/lib/Target/Sparc",
+		"source" : "llvm/lib/Target/Sparc"
+	},
+	"sources" : [],
+	"type" : "UTILITY"
+}

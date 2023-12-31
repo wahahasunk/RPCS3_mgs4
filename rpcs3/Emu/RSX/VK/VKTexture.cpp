@@ -46,7 +46,12 @@ namespace vk
 		}
 	}
 
-	void copy_image_to_buffer(VkCommandBuffer cmd, const vk::image* src, const vk::buffer* dst, const VkBufferImageCopy& region, bool swap_bytes)
+	void copy_image_to_buffer(
+		const vk::command_buffer& cmd,
+		const vk::image* src,
+		const vk::buffer* dst,
+		const VkBufferImageCopy& region,
+		const image_readback_options_t& options)
 	{
 		// Always validate
 		ensure(src->current_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL || src->current_layout == VK_IMAGE_LAYOUT_GENERAL);
@@ -56,12 +61,24 @@ namespace vk
 			vk::end_renderpass(cmd);
 		}
 
+		ensure((region.imageExtent.width + region.imageOffset.x) <= src->width());
+		ensure((region.imageExtent.height + region.imageOffset.y) <= src->height());
+
 		switch (src->format())
 		{
 		default:
 		{
-			ensure(!swap_bytes); // "Implicit byteswap option not supported for speficied format"
+			ensure(!options.swap_bytes); // "Implicit byteswap option not supported for speficied format"
 			vkCmdCopyImageToBuffer(cmd, src->value, src->current_layout, dst->value, 1, &region);
+
+			if (options.sync_region)
+			{
+				// Post-Transfer barrier
+				vk::insert_buffer_memory_barrier(cmd, dst->value,
+					options.sync_region.offset, options.sync_region.length,
+					VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+					VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+			}
 			break;
 		}
 		case VK_FORMAT_D32_SFLOAT:
@@ -92,7 +109,7 @@ namespace vk
 				VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
 
 			// 3. Do conversion with byteswap [D32->D16F]
-			if (!swap_bytes) [[likely]]
+			if (!options.swap_bytes) [[likely]]
 			{
 				auto job = vk::get_compute_task<vk::cs_fconvert_task<f32, f16>>();
 				job->run(cmd, dst, z32_offset, packed32_length, data_offset);
@@ -103,10 +120,18 @@ namespace vk
 				job->run(cmd, dst, z32_offset, packed32_length, data_offset);
 			}
 
-			// 4. Post-compute barrier
-			vk::insert_buffer_memory_barrier(cmd, dst->value, region.bufferOffset, packed16_length,
-				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+			if (options.sync_region)
+			{
+				const u64 sync_end = options.sync_region.offset + options.sync_region.length;
+				const u64 write_end = region.bufferOffset + packed16_length;
+				const u64 sync_offset = std::min<u64>(region.bufferOffset, options.sync_region.offset);
+				const u64 sync_length = std::max<u64>(sync_end, write_end) - sync_offset;
+
+				// 4. Post-compute barrier
+				vk::insert_buffer_memory_barrier(cmd, dst->value, sync_offset, sync_length,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+					VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+			}
 			break;
 		}
 		case VK_FORMAT_D24_UNORM_S8_UINT:
@@ -138,7 +163,7 @@ namespace vk
 
 			// 2. Interleave the separated data blocks with a compute job
 			vk::cs_interleave_task *job;
-			if (!swap_bytes) [[likely]]
+			if (!options.swap_bytes) [[likely]]
 			{
 				if (src->format() == VK_FORMAT_D24_UNORM_S8_UINT)
 				{
@@ -175,15 +200,23 @@ namespace vk
 
 			job->run(cmd, dst, data_offset, packed_length, z_offset, s_offset);
 
-			vk::insert_buffer_memory_barrier(cmd, dst->value, region.bufferOffset, packed_length,
-				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-				VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+			if (options.sync_region)
+			{
+				const u64 sync_end = options.sync_region.offset + options.sync_region.length;
+				const u64 write_end = region.bufferOffset + packed_length;
+				const u64 sync_offset = std::min<u64>(region.bufferOffset, options.sync_region.offset);
+				const u64 sync_length = std::max<u64>(sync_end, write_end) - sync_offset;
+
+				vk::insert_buffer_memory_barrier(cmd, dst->value, sync_offset, sync_length,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+					VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+			}
 			break;
 		}
 		}
 	}
 
-	void copy_buffer_to_image(VkCommandBuffer cmd, const vk::buffer* src, const vk::image* dst, const VkBufferImageCopy& region)
+	void copy_buffer_to_image(const vk::command_buffer& cmd, const vk::buffer* src, const vk::image* dst, const VkBufferImageCopy& region)
 	{
 		// Always validate
 		ensure(dst->current_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL || dst->current_layout == VK_IMAGE_LAYOUT_GENERAL);
@@ -633,7 +666,7 @@ namespace vk
 					else
 					{
 						// Ampere GPUs don't like the direct transfer hack above
-						stretch_image_typeless_safe(src, dst, typeless, src_rect, dst_rect, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+						stretch_image_typeless_safe(src, dst, typeless, src_rect, dst_rect, VK_IMAGE_ASPECT_DEPTH_BIT);
 					}
 					break;
 				}
@@ -641,12 +674,21 @@ namespace vk
 				{
 					auto typeless = vk::get_typeless_helper(VK_FORMAT_R32_SFLOAT, RSX_FORMAT_CLASS_COLOR, typeless_w, typeless_h);
 					change_image_layout(cmd, typeless, VK_IMAGE_LAYOUT_GENERAL);
-					stretch_image_typeless_unsafe(src, dst, typeless, src_rect, dst_rect, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+					if (use_unsafe_transport)
+					{
+						stretch_image_typeless_unsafe(src, dst, typeless, src_rect, dst_rect, VK_IMAGE_ASPECT_DEPTH_BIT);
+					}
+					else
+					{
+						stretch_image_typeless_safe(src, dst, typeless, src_rect, dst_rect, VK_IMAGE_ASPECT_DEPTH_BIT);
+					}
 					break;
 				}
 				case VK_FORMAT_D24_UNORM_S8_UINT:
 				{
 					const VkImageAspectFlags depth_stencil = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+
 					if (use_unsafe_transport)
 					{
 						auto typeless = vk::get_typeless_helper(VK_FORMAT_B8G8R8A8_UNORM, RSX_FORMAT_CLASS_COLOR, typeless_w, typeless_h);
@@ -729,7 +771,7 @@ namespace vk
 		}
 	}
 
-	static void gpu_deswizzle_sections_impl(VkCommandBuffer cmd, vk::buffer* scratch_buf, u32 dst_offset, int word_size, int word_count, bool swap_bytes, std::vector<VkBufferImageCopy>& sections)
+	static void gpu_deswizzle_sections_impl(const vk::command_buffer& cmd, vk::buffer* scratch_buf, u32 dst_offset, int word_size, int word_count, bool swap_bytes, std::vector<VkBufferImageCopy>& sections)
 	{
 		// NOTE: This has to be done individually for every LOD
 		vk::cs_deswizzle_base* job = nullptr;
@@ -825,11 +867,27 @@ namespace vk
 
 	static const vk::command_buffer& prepare_for_transfer(const vk::command_buffer& primary_cb, vk::image* dst_image, rsx::flags32_t& flags)
 	{
-		const vk::command_buffer* pcmd = nullptr;
-		if (flags & image_upload_options::upload_contents_async)
+		AsyncTaskScheduler* async_scheduler = (flags & image_upload_options::upload_contents_async)
+			? std::addressof(g_fxo->get<AsyncTaskScheduler>())
+			: nullptr;
+
+		if (async_scheduler && (dst_image->aspect() & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)))
 		{
-			auto& async_scheduler = g_fxo->get<AsyncTaskScheduler>();
-			auto async_cmd = async_scheduler.get_current();
+			auto pdev = vk::get_current_renderer();
+			if (pdev->get_graphics_queue_family() != pdev->get_transfer_queue_family()) [[ likely ]]
+			{
+				// According to spec, we cannot call vkCopyBufferToImage on a queue that does not support VK_QUEUE_GRAPHICS_BIT (VUID-vkCmdCopyBufferToImage-commandBuffer-07737)
+				// AMD doesn't care about this, but NVIDIA will crash if you try to cheat.
+				// We can just disable it for this case - it is actually very rare to upload depth-stencil stuff from CPU and RDB already uses inline uploads
+				flags &= ~image_upload_options::upload_contents_async;
+				async_scheduler = nullptr;
+			}
+		}
+
+		const vk::command_buffer* pcmd = nullptr;
+		if (async_scheduler)
+		{
+			auto async_cmd = async_scheduler->get_current();
 			async_cmd->begin();
 			pcmd = async_cmd;
 
@@ -840,7 +898,7 @@ namespace vk
 
 			// Queue transfer stuff. Must release from primary if owned and acquire in secondary.
 			// Ignore queue transfers when running in the hacky "fast" mode. We're already violating spec there.
-			if (dst_image->current_layout != VK_IMAGE_LAYOUT_UNDEFINED && async_scheduler.is_host_mode())
+			if (dst_image->current_layout != VK_IMAGE_LAYOUT_UNDEFINED && async_scheduler->is_host_mode())
 			{
 				// Release barrier
 				dst_image->queue_release(primary_cb, pcmd->get_queue_family(), dst_image->current_layout);
@@ -958,6 +1016,12 @@ namespace vk
 
 			auto buf_allocator = [&]() -> std::tuple<void*, usz>
 			{
+				if (image_setup_flags & source_is_gpu_resident)
+				{
+					// We should never reach here, unless something is very wrong...
+					fmt::throw_exception("Cannot allocate CPU memory for GPU-only data");
+				}
+
 				// Map with extra padding bytes in case of realignment
 				offset_in_upload_buffer = upload_heap.alloc<512>(image_linear_size + 8);
 				void* mapped_buffer = upload_heap.map(offset_in_upload_buffer, image_linear_size + 8);
@@ -967,6 +1031,21 @@ namespace vk
 			auto io_buf = rsx::io_buffer(buf_allocator);
 			opt = upload_texture_subresource(io_buf, layout, format, is_swizzled, caps);
 			upload_heap.unmap();
+
+			if (image_setup_flags & source_is_gpu_resident)
+			{
+				// Read from GPU buf if the input is already uploaded.
+				auto [iobuf, io_offset] = layout.data.raw();
+				upload_buffer = static_cast<buffer*>(iobuf);
+				offset_in_upload_buffer = io_offset;
+				// Never upload. Data is already resident.
+				opt.require_upload = false;
+			}
+			else
+			{
+				// Read from upload buffer
+				upload_buffer = upload_heap.heap.get();
+			}
 
 			copy_regions.push_back({});
 			auto& copy_info = copy_regions.back();
@@ -979,8 +1058,6 @@ namespace vk
 			copy_info.imageSubresource.baseArrayLayer = layout.layer;
 			copy_info.imageSubresource.mipLevel = layout.level;
 			copy_info.bufferRowLength = upload_pitch_in_texel;
-
-			upload_buffer = upload_heap.heap.get();
 
 			if (opt.require_upload)
 			{
@@ -1059,7 +1136,7 @@ namespace vk
 						copy.size = copy_cmd.length;
 					}
 				}
-				else
+				else if (upload_buffer != scratch_buf || offset_in_upload_buffer != scratch_offset)
 				{
 					buffer_copies.push_back({});
 					auto& copy = buffer_copies.back();
@@ -1105,7 +1182,7 @@ namespace vk
 					range_ptr += op.second;
 				}
 			}
-			else
+			else if (!buffer_copies.empty())
 			{
 				vkCmdCopyBuffer(cmd2, upload_buffer->value, scratch_buf->value, static_cast<u32>(buffer_copies.size()), buffer_copies.data());
 			}
@@ -1173,6 +1250,71 @@ namespace vk
 			host_data->texture_load_request_event = event_id;
 			vkCmdUpdateBuffer(cmd2, host_buffer, ::offset32(&vk::host_data_t::texture_load_complete_event), sizeof(u64), &event_id);
 		}
+	}
+
+	std::pair<buffer*, u32> detile_memory_block(const vk::command_buffer& cmd, const rsx::GCM_tile_reference& tiled_region,
+		const utils::address_range& range, u16 width, u16 height, u8 bpp)
+	{
+		// Calculate the true length of the usable memory section
+		const auto available_tile_size = tiled_region.tile->size - (range.start - tiled_region.base_address);
+		const auto max_content_size = tiled_region.tile->pitch * utils::align<u32>(height, 64);
+		const auto section_length = std::min(max_content_size, available_tile_size);
+
+		// Sync the DMA layer
+		const auto dma_mapping = vk::map_dma(range.start, section_length);
+		vk::load_dma(range.start, section_length);
+
+		// Allocate scratch and prepare for the GPU job
+		const auto scratch_buf = vk::get_scratch_buffer(cmd, section_length * 3); // 0 = linear data, 1 = padding (deswz), 2 = tiled data
+		const auto tiled_data_scratch_offset = section_length * 2;
+		const auto linear_data_scratch_offset = 0u;
+
+		// Schedule the job
+		const RSX_detiler_config config =
+		{
+			.tile_base_address = tiled_region.base_address,
+			.tile_base_offset = range.start - tiled_region.base_address,
+			.tile_size = tiled_region.tile->size,
+			.tile_pitch = tiled_region.tile->pitch,
+			.bank = tiled_region.tile->bank,
+
+			.dst = scratch_buf,
+			.dst_offset = linear_data_scratch_offset,
+			.src = scratch_buf,
+			.src_offset = section_length * 2,
+
+			.image_width = width,
+			.image_height = height,
+			.image_pitch = static_cast<u32>(width) * bpp,
+			.image_bpp = bpp
+		};
+
+		// Transfer
+		VkBufferCopy copy_rgn
+		{
+			.srcOffset = dma_mapping.first,
+			.dstOffset = tiled_data_scratch_offset,
+			.size = section_length
+		};
+		vkCmdCopyBuffer(cmd, dma_mapping.second->value, scratch_buf->value, 1, &copy_rgn);
+
+		// Barrier
+		vk::insert_buffer_memory_barrier(
+			cmd, scratch_buf->value, linear_data_scratch_offset, section_length,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+
+		// Detile
+		vk::get_compute_task<vk::cs_tile_memcpy<RSX_detiler_op::decode>>()->run(cmd, config);
+
+		// Barrier
+		vk::insert_buffer_memory_barrier(
+			cmd, scratch_buf->value, linear_data_scratch_offset, static_cast<u32>(width) * height * bpp,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+
+		// Return a descriptor pointing to the decrypted data
+		return { scratch_buf, linear_data_scratch_offset };
 	}
 
 	void blitter::scale_image(vk::command_buffer& cmd, vk::image* src, vk::image* dst, areai src_area, areai dst_area, bool interpolate, const rsx::typeless_xfer& xfer_info)

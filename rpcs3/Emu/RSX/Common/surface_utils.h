@@ -448,6 +448,13 @@ namespace rsx
 		}
 #endif
 
+		void invalidate_GPU_memory()
+		{
+			// Here be dragons. Use with caution.
+			shuffle_tag();
+			state_flags |= rsx::surface_state_flags::erase_bkgnd;
+		}
+
 		void clear_rw_barrier()
 		{
 			for (auto &e : old_contents)
@@ -560,7 +567,7 @@ namespace rsx
 			const auto parent_w = surface->template get_surface_width<rsx::surface_metrics::bytes>();
 			const auto parent_h = surface->template get_surface_height<rsx::surface_metrics::bytes>();
 
-			const auto [src_offset, dst_offset, size] = rsx::intersect_region(surface->base_addr, parent_w, parent_h, 1, base_addr, child_w, child_h, 1, get_rsx_pitch());
+			const auto [src_offset, dst_offset, size] = rsx::intersect_region(surface->base_addr, parent_w, parent_h, base_addr, child_w, child_h, get_rsx_pitch());
 
 			if (!size.width || !size.height)
 			{

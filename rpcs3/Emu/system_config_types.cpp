@@ -492,7 +492,6 @@ void fmt_class_string<ppu_decoder_type>::format(std::string& out, u64 arg)
 		switch (type)
 		{
 		case ppu_decoder_type::_static: return "Interpreter (static)";
-		case ppu_decoder_type::dynamic: return "Interpreter (dynamic)";
 		case ppu_decoder_type::llvm: return "Recompiler (LLVM)";
 		}
 
@@ -608,6 +607,7 @@ void fmt_class_string<gpu_preset_level>::format(std::string& out, u64 arg)
 		switch (value)
 		{
 		case gpu_preset_level::_auto: return "Auto";
+		case gpu_preset_level::ultra: return "Ultra";
 		case gpu_preset_level::high: return "High";
 		case gpu_preset_level::low: return "Low";
 		}
@@ -633,6 +633,23 @@ void fmt_class_string<vk_exclusive_fs_mode>::format(std::string& out, u64 arg)
 }
 
 template <>
+void fmt_class_string<stereo_render_mode_options>::format(std::string& out, u64 arg)
+{
+	format_enum(out, arg, [](stereo_render_mode_options value)
+		{
+			switch (value)
+			{
+			case stereo_render_mode_options::disabled: return "Disabled";
+			case stereo_render_mode_options::anaglyph: return "Anaglyph";
+			case stereo_render_mode_options::side_by_side: return "Side-by-Side";
+			case stereo_render_mode_options::over_under: return "Over-Under";
+			}
+
+			return unknown;
+		});
+}
+
+template <>
 void fmt_class_string<output_scaling_mode>::format(std::string& out, u64 arg)
 {
 	format_enum(out, arg, [](output_scaling_mode value)
@@ -642,6 +659,23 @@ void fmt_class_string<output_scaling_mode>::format(std::string& out, u64 arg)
 		case output_scaling_mode::nearest: return "Nearest";
 		case output_scaling_mode::bilinear: return "Bilinear";
 		case output_scaling_mode::fsr: return "FidelityFX Super Resolution";
+		}
+
+		return unknown;
+	});
+}
+
+template <>
+void fmt_class_string<xfloat_accuracy>::format(std::string& out, u64 arg)
+{
+	format_enum(out, arg, [](xfloat_accuracy value)
+	{
+		switch (value)
+		{
+		case xfloat_accuracy::accurate: return "Accurate";
+		case xfloat_accuracy::approximate: return "Approximate";
+		case xfloat_accuracy::relaxed: return "Relaxed";
+		case xfloat_accuracy::inaccurate: return "Inaccurate";
 		}
 
 		return unknown;

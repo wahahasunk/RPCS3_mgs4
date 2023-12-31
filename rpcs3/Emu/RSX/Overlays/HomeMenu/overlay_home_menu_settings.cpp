@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "overlay_home_menu_settings.h"
 #include "overlay_home_menu_components.h"
+#include "Emu/system_config.h"
 
 // TODO: Localization of the setting names
 // TODO: Localization of the dropdown values
@@ -41,9 +42,10 @@ namespace rsx
 		home_menu_settings_video::home_menu_settings_video(u16 x, u16 y, u16 width, u16 height, bool use_separators, home_menu_page* parent)
 			: home_menu_settings_page(x, y, width, height, use_separators, parent, get_localized_string(localized_string_id::HOME_MENU_SETTINGS_VIDEO))
 		{
-			add_dropdown(&g_cfg.video.frame_limit, "Frame limit");
-			add_unsigned_slider(&g_cfg.video.anisotropic_level_override, "Anisotropic Filter Override", "", 2);
+			add_dropdown(&g_cfg.video.frame_limit, "Frame Limit");
+			add_unsigned_slider(&g_cfg.video.anisotropic_level_override, "Anisotropic Filter Override", "x", 2, {{0, "Auto"}});
 
+			add_dropdown(&g_cfg.video.output_scaling, "Output Scaling");
 			if (g_cfg.video.renderer == video_renderer::vulkan && g_cfg.video.output_scaling == output_scaling_mode::fsr)
 			{
 				add_unsigned_slider(&g_cfg.video.vk.rcas_sharpening_intensity, "FidelityFX CAS Sharpening Intensity", " %", 1);
@@ -51,21 +53,20 @@ namespace rsx
 
 			add_checkbox(&g_cfg.video.stretch_to_display_area, "Stretch To Display Area");
 
-			add_unsigned_slider(&g_cfg.video.driver_wakeup_delay, "Driver Wake-Up Delay", " µs", 20, g_cfg.video.driver_wakeup_delay.min, 800);
-			add_signed_slider(&g_cfg.video.vblank_rate, "VBlank Frequency", " Hz", 1);
-			add_checkbox(&g_cfg.video.vblank_ntsc, "VBlank NTSC Fixup");
-
 			apply_layout();
 		}
 
 		home_menu_settings_advanced::home_menu_settings_advanced(u16 x, u16 y, u16 width, u16 height, bool use_separators, home_menu_page* parent)
 			: home_menu_settings_page(x, y, width, height, use_separators, parent, get_localized_string(localized_string_id::HOME_MENU_SETTINGS_ADVANCED))
 		{
-			add_checkbox(&g_cfg.core.spu_loop_detection, "SPU Loop Detection");
 			add_signed_slider(&g_cfg.core.preferred_spu_threads, "Preferred SPU Threads", "", 1);
 			add_unsigned_slider(&g_cfg.core.max_cpu_preempt_count_per_frame, "Max Power Saving CPU-Preemptions", "", 1);
 			add_checkbox(&g_cfg.core.rsx_accurate_res_access, "Accurate RSX reservation access");
 			add_dropdown(&g_cfg.core.sleep_timers_accuracy, "Sleep Timers Accuracy");
+
+			add_unsigned_slider(&g_cfg.video.driver_wakeup_delay, "Driver Wake-Up Delay", " µs", 20, {}, g_cfg.video.driver_wakeup_delay.min, 800);
+			add_signed_slider(&g_cfg.video.vblank_rate, "VBlank Frequency", " Hz", 30);
+			add_checkbox(&g_cfg.video.vblank_ntsc, "VBlank NTSC Fixup");
 
 			apply_layout();
 		}
@@ -74,6 +75,7 @@ namespace rsx
 			: home_menu_settings_page(x, y, width, height, use_separators, parent, get_localized_string(localized_string_id::HOME_MENU_SETTINGS_INPUT))
 		{
 			add_checkbox(&g_cfg.io.background_input_enabled, "Background Input Enabled");
+			add_checkbox(&g_cfg.io.keep_pads_connected, "Keep Pads Connected");
 			add_checkbox(&g_cfg.io.show_move_cursor, "Show PS Move Cursor");
 
 			if (g_cfg.io.camera == camera_handler::qt)
@@ -92,6 +94,7 @@ namespace rsx
 		{
 			add_checkbox(&g_cfg.misc.show_trophy_popups, "Show Trophy Popups");
 			add_checkbox(&g_cfg.misc.show_shader_compilation_hint, "Show Shader Compilation Hint");
+			add_checkbox(&g_cfg.misc.show_ppu_compilation_hint, "Show PPU Compilation Hint");
 
 			apply_layout();
 		}

@@ -84,12 +84,22 @@ namespace fs
 		usz iov_len;
 	};
 
+	struct file_id
+	{
+		std::string type;
+		std::vector<u8> data;
+
+		explicit operator bool() const;
+		bool is_mirror_of(const file_id&) const;
+		bool is_coherent_with(const file_id&) const;
+	};
+
 	// File handle base
 	struct file_base
 	{
 		virtual ~file_base();
 
-		[[noreturn]] virtual stat_t stat();
+		[[noreturn]] virtual stat_t get_stat();
 		virtual void sync();
 		virtual bool trunc(u64 length) = 0;
 		virtual u64 read(void* buffer, u64 size) = 0;
@@ -98,6 +108,7 @@ namespace fs
 		virtual u64 seek(s64 offset, seek_mode whence) = 0;
 		virtual u64 size() = 0;
 		virtual native_handle get_handle();
+		virtual file_id get_id();
 		virtual u64 write_gather(const iovec_clone* buffers, u64 buf_count);
 	};
 
@@ -165,11 +176,17 @@ namespace fs
 	// Set virtual device with specified name (nullptr for deletion)
 	shared_ptr<device_base> set_virtual_device(const std::string& name, shared_ptr<device_base> device);
 
-	// Try to get parent directory (returns empty string on failure)
-	std::string get_parent_dir(std::string_view path, u32 levels = 1);
+	// Try to get parent directory
+	std::string_view get_parent_dir_view(std::string_view path, u32 parent_level = 1);
+
+	// String (typical use) version
+	inline std::string get_parent_dir(std::string_view path, u32 parent_level = 1)
+	{
+		return std::string{get_parent_dir_view(path, parent_level)};
+	}
 
 	// Get file information
-	bool stat(const std::string& path, stat_t& info);
+	bool get_stat(const std::string& path, stat_t& info);
 
 	// Check whether a file or a directory exists (not recommended, use is_file() or is_dir() instead)
 	bool exists(const std::string& path);
@@ -267,14 +284,14 @@ namespace fs
 		}
 
 		// Get file information
-		stat_t stat(
+		stat_t get_stat(
 			u32 line = __builtin_LINE(),
 			u32 col = __builtin_COLUMN(),
 			const char* file = __builtin_FILE(),
 			const char* func = __builtin_FUNCTION()) const
 		{
 			if (!m_file) xnull({line, col, file, func});
-			return m_file->stat();
+			return m_file->get_stat();
 		}
 
 		// Sync file buffers
@@ -478,7 +495,8 @@ namespace fs
 		{
 			std::basic_string<T> result;
 			result.resize(size() / sizeof(T));
-			if (seek(0), !read(result, result.size(), file, func, line, col)) xfail({line, col, file, func});
+			seek(0);
+			if (!read(result, result.size(), file, func, line, col)) xfail({line, col, file, func});
 			return result;
 		}
 
@@ -492,12 +510,16 @@ namespace fs
 		{
 			std::vector<T> result;
 			result.resize(size() / sizeof(T));
-			if (seek(0), !read(result, result.size(), file, func, line, col)) xfail({line, col, file, func});
+			seek(0);
+			if (!read(result, result.size(), file, func, line, col)) xfail({line, col, file, func});
 			return result;
 		}
 
 		// Get native handle if available
 		native_handle get_handle() const;
+
+		// Get file ID information (custom ID)
+		file_id get_id() const;
 
 		// Gathered write
 		u64 write_gather(const iovec_clone* buffers, u64 buf_count,
@@ -654,11 +676,23 @@ namespace fs
 
 		// This is meant to modify files atomically, overwriting is likely
 		bool commit(bool overwrite = true);
+		bool open(std::string_view path);
 
-		pending_file(std::string_view path);
+		pending_file() noexcept = default;
+
+		pending_file(std::string_view path) noexcept
+		{
+			open(path);
+		}
+
 		pending_file(const pending_file&) = delete;
 		pending_file& operator=(const pending_file&) = delete;
 		~pending_file();
+
+		const std::string& get_temp_path() const
+		{
+			return m_path;
+		}
 
 	private:
 		std::string m_path{}; // Pending file path
@@ -684,6 +718,7 @@ namespace fs
 		isdir,
 		toolong,
 		nospace,
+		xdev,
 		unknown
 	};
 
@@ -808,7 +843,7 @@ namespace fs
 			return obj.size();
 		}
 
-		stat_t stat() override
+		stat_t get_stat() override
 		{
 			return m_stat;
 		}

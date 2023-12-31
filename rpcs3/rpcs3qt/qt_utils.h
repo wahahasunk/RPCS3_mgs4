@@ -13,6 +13,8 @@
 #include <QTreeWidgetItem>
 #include <QPainter>
 #include <QFutureWatcher>
+#include <QGuiApplication>
+#include <QStyleHints>
 
 #include <string>
 #include <map>
@@ -63,16 +65,31 @@ namespace gui
 		QIcon get_colorized_icon(const QIcon& old_icon, const QColor& old_color, const std::map<QIcon::Mode, QColor>& new_colors, bool use_special_masks = false, bool colorize_all = false);
 
 		// Returns a list of all base names of files in dir whose complete file names contain one of the given name_filters
-		QStringList get_dir_entries(const QDir& dir, const QStringList& name_filters);
+		QStringList get_dir_entries(const QDir& dir, const QStringList& name_filters, bool full_path = false);
+
+		// Returns the foreground color of QLabel with respect to the current light/dark mode.
+		QColor get_foreground_color();
+
+		// Returns the background color of QLabel with respect to the current light/dark mode.
+		QColor get_background_color();
 
 		// Returns the color specified by its color_role for the QLabels with object_name
-		QColor get_label_color(const QString& object_name, QPalette::ColorRole color_role = QPalette::WindowText);
+		QColor get_label_color(const QString& object_name, const QColor& fallback_light, const QColor& fallback_dark, QPalette::ColorRole color_role = QPalette::WindowText);
 
 		// Returns the font of the QLabels with object_name
 		QFont get_label_font(const QString& object_name);
 
 		// Returns the width of the text
 		int get_label_width(const QString& text, const QFont* font = nullptr);
+
+		// Returns the color for richtext <a> links.
+		QColor get_link_color(const QString& name = "richtext_link_color");
+
+		// Returns the color string for richtext <a> links.
+		QString get_link_color_string(const QString& name = "richtext_link_color");
+
+		// Returns the style for richtext <a> links. e.g. style="color: #123456;"
+		QString get_link_style(const QString& name = "richtext_link_color");
 
 		template <typename T>
 		void set_font_size(T& qobj, int size)
@@ -82,11 +99,11 @@ namespace gui
 			qobj.setFont(font);
 		}
 
-		// Returns a scaled, centered QImage
-		QImage get_centered_image(const QString& path, const QSize& icon_size, int offset_x, int offset_y, qreal device_pixel_ratio);
+		// Returns a scaled, centered QPixmap
+		QPixmap get_centered_pixmap(QPixmap pixmap, const QSize& icon_size, int offset_x, int offset_y, qreal device_pixel_ratio, Qt::TransformationMode mode);
 
 		// Returns a scaled, centered QPixmap
-		QPixmap get_centered_pixmap(const QString& path, const QSize& icon_size, int offset_x, int offset_y, qreal device_pixel_ratio);
+		QPixmap get_centered_pixmap(const QString& path, const QSize& icon_size, int offset_x, int offset_y, qreal device_pixel_ratio, Qt::TransformationMode mode);
 
 		// Returns the part of the image loaded from path that is inside the bounding box of its opaque areas
 		QImage get_opaque_image_area(const QString& path);
@@ -130,11 +147,23 @@ namespace gui
 		// Convert an arbitrary count of bytes to a readable format using global units (KB, MB...)
 		QString format_byte_size(usz size);
 
+		static inline Qt::ColorScheme color_scheme()
+		{
+			return QGuiApplication::styleHints()->colorScheme();
+		}
+
+		static inline bool dark_mode_active()
+		{
+			return color_scheme() == Qt::ColorScheme::Dark;
+		}
+
 		template <typename T>
 		void stop_future_watcher(QFutureWatcher<T>& watcher, bool cancel, std::shared_ptr<atomic_t<bool>> cancel_flag = nullptr)
 		{
-			if (watcher.isStarted() || watcher.isRunning())
+			if (watcher.isSuspended() || watcher.isRunning())
 			{
+				watcher.resume();
+
 				if (cancel)
 				{
 					watcher.cancel();

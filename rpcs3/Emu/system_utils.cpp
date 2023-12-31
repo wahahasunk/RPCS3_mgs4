@@ -38,17 +38,17 @@ namespace rpcs3::utils
 		return thread_count;
 	}
 
-	void configure_logs()
+	void configure_logs(bool force_enable)
 	{
 		static bool was_silenced = false;
 
-		const bool silenced = g_cfg.misc.silence_all_logs.get();
+		const bool silenced = g_cfg.misc.silence_all_logs.get() && !force_enable;
 
 		if (silenced)
 		{
 			if (!was_silenced)
 			{
-				sys_log.success("Disabling logging! Do not create issues on GitHub or on the forums while logging is disabled.");
+				sys_log.always()("Disabling logging! Do not create issues on GitHub or on the forums while logging is disabled.");
 			}
 
 			logs::silence();
@@ -379,6 +379,6 @@ namespace rpcs3::utils
 	std::string get_custom_input_config_path(const std::string& title_id)
 	{
 		if (title_id.empty()) return "";
-		return get_input_config_dir(title_id) + g_cfg_profile.default_profile + ".yml";
+		return get_input_config_dir(title_id) + g_cfg_input_configs.default_config + ".yml";
 	}
 }

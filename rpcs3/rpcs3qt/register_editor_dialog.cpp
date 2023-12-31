@@ -12,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QMessageBox>
+#include <QCompleter>
 #include <charconv>
 
 #include "util/v128.hpp"
@@ -81,6 +82,14 @@ register_editor_dialog::register_editor_dialog(QWidget *parent, CPUDisAsm* _disa
 	button_cancel->setFixedWidth(80);
 
 	m_register_combo = new QComboBox(this);
+	m_register_combo->setMaxVisibleItems(20);
+	m_register_combo->setEditable(true);
+	m_register_combo->setInsertPolicy(QComboBox::NoInsert);
+	m_register_combo->lineEdit()->setPlaceholderText(tr("Search a register"));
+	m_register_combo->completer()->setCompletionMode(QCompleter::PopupCompletion);
+	m_register_combo->completer()->setMaxVisibleItems(20);
+	m_register_combo->completer()->setFilterMode(Qt::MatchContains);
+
 	m_value_line = new QLineEdit(this);
 	m_value_line->setFixedWidth(200);
 
@@ -147,7 +156,7 @@ register_editor_dialog::register_editor_dialog(QWidget *parent, CPUDisAsm* _disa
 	connect(button_cancel, &QAbstractButton::clicked, this, &register_editor_dialog::reject);
 	connect(m_register_combo, &QComboBox::currentTextChanged, this, [this](const QString&)
 	{
-		if (const auto qvar = m_register_combo->currentData(); qvar.canConvert(QMetaType::Int))
+		if (const auto qvar = m_register_combo->currentData(); qvar.canConvert<int>())
 		{
 			updateRegister(qvar.toInt());
 		}
@@ -186,7 +195,7 @@ void register_editor_dialog::updateRegister(int reg) const
 		else if (reg == PPU_LR)  str = fmt::format("%016llx", ppu.lr);
 		else if (reg == PPU_CTR) str = fmt::format("%016llx", ppu.ctr);
 		else if (reg == PPU_VRSAVE) str = fmt::format("%08x", ppu.vrsave);
-		else if (reg == PPU_PRIO) str = fmt::format("%08x", +ppu.prio);
+		else if (reg == PPU_PRIO) str = fmt::format("%08x", ppu.prio.load().prio);
 		else if (reg == RESERVATION_LOST) str = sstr(ppu.raddr ? tr("Lose reservation on OK") : tr("Reservation is inactive"));
 		else if (reg == PC) str = fmt::format("%08x", ppu.cia);
 	}
